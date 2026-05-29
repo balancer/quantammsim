@@ -20,6 +20,15 @@ from quantammsim.pools.hodl_pool import HODLPool
 from quantammsim.pools.FM_AMM.cow_pool import CowPool
 from quantammsim.pools.ECLP.gyroscope import GyroscopePool
 from quantammsim.pools.reCLAMM.reclamm import ReClammPool
+from quantammsim.pools.fantasticlamm.fantasticlamm_er import (
+    FantasticLammEfficiencyRatioPool,
+)
+from quantammsim.pools.fantasticlamm.fantasticlamm_ewma import (
+    FantasticLammEwmaEfficiencyPool,
+)
+from quantammsim.pools.fantasticlamm.fantasticlamm_sign import (
+    FantasticLammSignEwmaPool,
+)
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.hooks.versus_rebalancing import (
     CalculateLossVersusRebalancing,
@@ -231,6 +240,12 @@ def create_pool(rule):
         base_pool = GyroscopePool()
     elif base_rule == "reclamm":
         base_pool = ReClammPool()
+    elif base_rule == "fantasticlamm_er":
+        base_pool = FantasticLammEfficiencyRatioPool()
+    elif base_rule == "fantasticlamm_ewma":
+        base_pool = FantasticLammEwmaEfficiencyPool()
+    elif base_rule == "fantasticlamm_sign":
+        base_pool = FantasticLammSignEwmaPool()
     else:
         raise NotImplementedError(f"Unknown base pool type: {base_rule}")
 
