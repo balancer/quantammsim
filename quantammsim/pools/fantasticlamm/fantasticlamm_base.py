@@ -29,6 +29,18 @@ from quantammsim.pools.fantasticlamm.fantasticlamm_reserves import (
 )
 
 
+def _trigger_value(params, run_fingerprint, param_key, fp_key, default):
+    """Resolve a trigger parameter, preferring learnable ``params``.
+
+    Reading from ``params`` (a traced pytree) lets optuna vary the value across
+    trials without recompiling the JIT kernel. Falls back to the static
+    ``run_fingerprint`` key, then a default, for non-tuned forward runs.
+    """
+    if param_key in params:
+        return jnp.squeeze(params[param_key])
+    return jnp.float64(run_fingerprint.get(fp_key, default))
+
+
 class _FLPoolState(NamedTuple):
     """Intermediate state produced by ``_init_pool_state``."""
     local_prices: jnp.ndarray
@@ -112,19 +124,26 @@ class FantasticLammBasePool(ReClammPool):
             seconds_per_step=seconds_per_step,
             centeredness_scaling=centeredness_scaling,
             window=int(run_fingerprint.get("fantasticlamm_window", 60)),
-            trigger_alpha=jnp.float64(
-                run_fingerprint.get("fantasticlamm_trigger_alpha", 0.05)
+            trigger_alpha=_trigger_value(
+                params, run_fingerprint, "trigger_alpha",
+                "fantasticlamm_trigger_alpha", 0.05,
             ),
             ratio_base=ratio_base,
-            ratio_max=jnp.float64(
-                run_fingerprint.get("fantasticlamm_ratio_max", 16.0)
+            ratio_max=_trigger_value(
+                params, run_fingerprint, "ratio_max",
+                "fantasticlamm_ratio_max", 16.0,
             ),
-            deadband=jnp.float64(run_fingerprint.get("fantasticlamm_deadband", 0.3)),
-            sharpness=jnp.float64(
-                run_fingerprint.get("fantasticlamm_sharpness", 1.0)
+            deadband=_trigger_value(
+                params, run_fingerprint, "deadband",
+                "fantasticlamm_deadband", 0.3,
             ),
-            max_narrow_log_step=jnp.float64(
-                run_fingerprint.get("fantasticlamm_max_narrow_log_step", 0.005)
+            sharpness=_trigger_value(
+                params, run_fingerprint, "sharpness",
+                "fantasticlamm_sharpness", 1.0,
+            ),
+            max_narrow_log_step=_trigger_value(
+                params, run_fingerprint, "max_narrow_log_step",
+                "fantasticlamm_max_narrow_log_step", 0.005,
             ),
         )
 
