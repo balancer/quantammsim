@@ -43,7 +43,11 @@ OOS_END = "2026-05-20 00:00:00"
 OBJECTIVE = "annualised_returns_over_hodl"
 FEE = 0.003
 INITIAL = 10_000.0
-RULES = ["reclamm", "fantasticlamm_sign"]
+RULES = [
+    "reclamm",
+    "fantasticlamm_sign",
+    "fantasticlamm_sign_ema_mag",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +56,7 @@ RULES = ["reclamm", "fantasticlamm_sign"]
 
 def reclamm_params(t):
     """3-param search matching the QuantAMM Docs PARAMETER_CONFIG."""
-    return {
+    p = {
         "price_ratio": jnp.array(
             t.suggest_float("price_ratio", 1.01, 200.0, log=True)
         ),
@@ -63,10 +67,11 @@ def reclamm_params(t):
             t.suggest_float("shift_exponent", 1e-3, 125.0, log=True)
         ),
     }
+    return p, {}
 
 
-def fantasticlamm_sign_params(t):
-    """8-param search for fantasticlamm_sign."""
+def _fantasticlamm_base_params(t):
+    """The 8 core params shared by all fantasticlamm variants."""
     ratio_base = t.suggest_float("ratio_base", 1.01, 20.0, log=True)
     ratio_span = t.suggest_float("ratio_span", 1.5, 300.0, log=True)
     ratio_max = ratio_base * ratio_span
@@ -95,18 +100,73 @@ def fantasticlamm_sign_params(t):
     }
 
 
+def fantasticlamm_sign_params(t):
+    return _fantasticlamm_base_params(t), {}
+
+
+def fantasticlamm_sign_ema_params(t):
+    """sign_ema (binary EMA-cross): adds trigger_beta."""
+    p = _fantasticlamm_base_params(t)
+    p["trigger_beta"] = jnp.array(
+        t.suggest_float("trigger_beta", 1e-5, 0.1, log=True)
+    )
+    return p, {}
+
+
+def fantasticlamm_sign_ema_mag_params(t):
+    """sign_ema_mag: trigger_beta + magnitude_k."""
+    p = _fantasticlamm_base_params(t)
+    p["trigger_beta"] = jnp.array(
+        t.suggest_float("trigger_beta", 1e-5, 0.1, log=True)
+    )
+    p["magnitude_k"] = jnp.array(
+        t.suggest_float("magnitude_k", 1e-3, 0.5, log=True)
+    )
+    return p, {}
+
+
+def fantasticlamm_sign_hybrid_params(t):
+    """sign_hybrid: blends sign + sign_ema_mag with weight w_static in [0, 1]."""
+    p = _fantasticlamm_base_params(t)
+    p["trigger_beta"] = jnp.array(
+        t.suggest_float("trigger_beta", 1e-5, 0.1, log=True)
+    )
+    p["magnitude_k"] = jnp.array(
+        t.suggest_float("magnitude_k", 1e-3, 0.5, log=True)
+    )
+    p["w_static"] = jnp.array(t.suggest_float("w_static", 0.0, 1.0))
+    return p, {}
+
+
+# ER window candidates (minutes). Each unique value triggers one JIT recompile.
+ER_WINDOWS = [240, 1440, 4320, 10080, 20160]  # 4h, 1d, 3d, 1w, 2w
+
+
+def fantasticlamm_er_params(t):
+    """ER: same base params (no trigger_beta/magnitude_k), plus categorical window."""
+    p = _fantasticlamm_base_params(t)
+    # trigger_alpha is unused by ER but harmless to leave at the sampled value.
+    window = t.suggest_categorical("window", ER_WINDOWS)
+    return p, {"fantasticlamm_window": int(window)}
+
+
 SAMPLERS = {
     "reclamm": reclamm_params,
     "fantasticlamm_sign": fantasticlamm_sign_params,
+    "fantasticlamm_sign_ema": fantasticlamm_sign_ema_params,
+    "fantasticlamm_sign_ema_mag": fantasticlamm_sign_ema_mag_params,
+    "fantasticlamm_sign_hybrid": fantasticlamm_sign_hybrid_params,
+    "fantasticlamm_er": fantasticlamm_er_params,
 }
 
 
 def reconstruct_best(rule, bp):
-    """Rebuild a params dict from optuna's best_params (no trial object)."""
+    """Rebuild (params, fp_overrides) from optuna's best_params (no trial object)."""
     class _Fixed:
         number = -1
         def __init__(self, p): self.p = p
         def suggest_float(self, name, *a, **k): return self.p[name]
+        def suggest_categorical(self, name, choices): return self.p[name]
     return SAMPLERS[rule](_Fixed(bp))
 
 
@@ -178,7 +238,9 @@ def tune(rule, tokens, n_trials, seed, price_df):
 
     def objective(t):
         try:
-            result = run(fp_train, sampler(t), price_df)
+            params, fp_overrides = sampler(t)
+            fp_trial = {**fp_train, **fp_overrides}
+            result = run(fp_trial, params, price_df)
             obj = annualised_returns_over_hodl(result)
         except Exception as e:  # noqa: BLE001
             print(f"  [{rule}] trial {t.number}: FAILED "
@@ -200,10 +262,12 @@ def tune(rule, tokens, n_trials, seed, price_df):
     print(f"\n--- BEST {rule} (train annualised_returns_over_hodl = "
           f"{study.best_value:+.4f}) ---", flush=True)
     for k, v in study.best_params.items():
-        print(f"    {k:22s} = {v:.6f}", flush=True)
+        v_str = f"{v:.6f}" if isinstance(v, (int, float)) else str(v)
+        print(f"    {k:22s} = {v_str}", flush=True)
 
     fp_oos = base_fingerprint(rule, tokens, OOS_START, OOS_END)
-    best_params = reconstruct_best(rule, study.best_params)
+    best_params, best_fp_overrides = reconstruct_best(rule, study.best_params)
+    fp_oos = {**fp_oos, **best_fp_overrides}
     oos_result = run(fp_oos, best_params, price_df)
     oos = metrics(oos_result)
     oos["annualised_vs_hodl"] = annualised_returns_over_hodl(oos_result)
@@ -218,11 +282,21 @@ def tune(rule, tokens, n_trials, seed, price_df):
 # ---------------------------------------------------------------------------
 
 def main():
+    global TRAIN_START, TRAIN_END, OOS_START, OOS_END
     parser = argparse.ArgumentParser()
     parser.add_argument("--tokens", nargs=2, default=["ETH", "USDC"])
     parser.add_argument("--n-trials", type=int, default=150)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--train-start", default=TRAIN_START)
+    parser.add_argument("--train-end", default=TRAIN_END)
+    parser.add_argument("--oos-start", default=OOS_START)
+    parser.add_argument("--oos-end", default=OOS_END)
     args = parser.parse_args()
+
+    TRAIN_START = args.train_start
+    TRAIN_END = args.train_end
+    OOS_START = args.oos_start
+    OOS_END = args.oos_end
 
     tokens = args.tokens
     print(f"Preloading {tokens} price data from {DATA_ROOT} ...", flush=True)

@@ -29,6 +29,15 @@ from quantammsim.pools.fantasticlamm.fantasticlamm_ewma import (
 from quantammsim.pools.fantasticlamm.fantasticlamm_sign import (
     FantasticLammSignEwmaPool,
 )
+from quantammsim.pools.fantasticlamm.fantasticlamm_sign_ema import (
+    FantasticLammSignEmaPool,
+)
+from quantammsim.pools.fantasticlamm.fantasticlamm_sign_ema_mag import (
+    FantasticLammSignEmaMagPool,
+)
+from quantammsim.pools.fantasticlamm.fantasticlamm_sign_hybrid import (
+    FantasticLammSignHybridPool,
+)
 from quantammsim.pools.base_pool import AbstractPool
 from quantammsim.hooks.versus_rebalancing import (
     CalculateLossVersusRebalancing,
@@ -246,6 +255,12 @@ def create_pool(rule):
         base_pool = FantasticLammEwmaEfficiencyPool()
     elif base_rule == "fantasticlamm_sign":
         base_pool = FantasticLammSignEwmaPool()
+    elif base_rule == "fantasticlamm_sign_ema":
+        base_pool = FantasticLammSignEmaPool()
+    elif base_rule == "fantasticlamm_sign_ema_mag":
+        base_pool = FantasticLammSignEmaMagPool()
+    elif base_rule == "fantasticlamm_sign_hybrid":
+        base_pool = FantasticLammSignHybridPool()
     else:
         raise NotImplementedError(f"Unknown base pool type: {base_rule}")
 

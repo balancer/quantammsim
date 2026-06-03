@@ -38,6 +38,12 @@ from quantammsim.pools.fantasticlamm.fantasticlamm_ewma import (
 from quantammsim.pools.fantasticlamm.fantasticlamm_sign import (
     FantasticLammSignEwmaPool,
 )
+from quantammsim.pools.fantasticlamm.fantasticlamm_sign_ema import (
+    FantasticLammSignEmaPool,
+)
+from quantammsim.pools.fantasticlamm.fantasticlamm_sign_ema_mag import (
+    FantasticLammSignEmaMagPool,
+)
 from quantammsim.pools.fantasticlamm.triggers.efficiency_ratio import (
     efficiency_ratio_signal,
 )
@@ -250,12 +256,113 @@ def test_with_fees_kernel_runs_finite():
     ("fantasticlamm_er", FantasticLammEfficiencyRatioPool, "er"),
     ("fantasticlamm_ewma", FantasticLammEwmaEfficiencyPool, "ewma"),
     ("fantasticlamm_sign", FantasticLammSignEwmaPool, "sign"),
+    ("fantasticlamm_sign_ema", FantasticLammSignEmaPool, "sign_ema"),
+    ("fantasticlamm_sign_ema_mag", FantasticLammSignEmaMagPool, "sign_ema_mag"),
 ])
 def test_create_pool_registration(rule, cls, mode):
     pool = create_pool(rule)
     assert isinstance(pool, cls)
     assert pool._TRIGGER_MODE == mode
     assert pool.is_trainable() is False
+
+
+# ---------------------------------------------------------------------------
+# sign_ema / sign_ema_mag — kernel sanity + the off-center-sideways bug fix
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("mode,kw", [
+    ("sign_ema", dict(trigger_alpha=0.02, trigger_beta=0.001)),
+    ("sign_ema_mag", dict(trigger_alpha=0.02, trigger_beta=0.001, magnitude_k=0.05)),
+])
+def test_sign_ema_kernel_runs_finite(mode, kw):
+    T = 600
+    A = 100.0 * np.exp(np.cumsum(np.full(T, 0.001)))  # gentle uptrend
+    prices = jnp.array(np.stack([A, np.ones(T)], axis=1))
+    init_res, Va, Vb = initialise_reclamm_reserves(10000.0, prices[0], jnp.array(1.5))
+    reserves = _jax_calc_fantasticlamm_reserves_zero_fees(
+        init_res, Va, Vb, prices,
+        jnp.float64(0.5), jnp.float64(1.0 - 1.0 / 124000.0), 60.0,
+        trigger_mode=mode, ratio_base=1.5, ratio_max=16.0, deadband=0.3,
+        sharpness=1.0, max_narrow_log_step=0.005, **kw,
+    )
+    assert reserves.shape == (T, 2)
+    assert bool(np.all(np.isfinite(np.array(reserves))))
+
+
+@pytest.mark.parametrize("mode", ["sign_ema", "sign_ema_mag"])
+def test_sign_ema_protects_value_in_strong_trend(mode):
+    # Same protective behaviour as the original sign trigger.
+    T = 2000
+    A = 100.0 * np.exp(np.cumsum(np.full(T, 0.0008)))
+    prices = jnp.array(np.stack([A, np.ones(T)], axis=1))
+    cm, dpsb = jnp.float64(0.5), jnp.float64(1.0 - 1.0 / 124000.0)
+    init_res, Va, Vb = initialise_reclamm_reserves(10000.0, prices[0], jnp.array(1.5))
+
+    rc = _jax_calc_reclamm_reserves_zero_fees(init_res, Va, Vb, prices, cm, dpsb, 60.0)
+    fl = _jax_calc_fantasticlamm_reserves_zero_fees(
+        init_res, Va, Vb, prices, cm, dpsb, 60.0,
+        trigger_mode=mode, trigger_alpha=0.02, trigger_beta=0.005,
+        magnitude_k=0.05,
+        ratio_base=1.5, ratio_max=16.0, deadband=0.3, sharpness=1.0,
+        max_narrow_log_step=0.005,
+    )
+    assert float(fl[-1] @ prices[-1]) > float(rc[-1] @ prices[-1])
+
+
+def test_sign_ema_mag_reconcentrates_at_off_center_sideways():
+    """The literal bug-fix check: when price sits sideways at a *non-center*
+    value for many blocks, the band should re-concentrate.
+
+    Only the magnitude variant (sign_ema_mag) is checked here. The original
+    `sign` trigger fails the test by design (geometric center never updates)
+    — that is the bug. The binary `sign_ema` is empirically unstable on this
+    setup: with the instant-widen / slow-narrow mechanism, ±1 sign noise
+    triggers periodic instant widens that take hundreds of steps to unwind, so
+    Q drifts upward over time. The continuous magnitude variant low-pass
+    filters that noise (small deviations -> small signs) and re-concentrates
+    cleanly. Optuna will score both empirically in the OOS comparison.
+    """
+    from experiments._diagnostics import fantasticlamm_full_state
+
+    T = 8000
+    rng = np.random.default_rng(0)
+    prices_np = np.stack([130.0 * (1.0 + 0.001 * rng.standard_normal(T)),
+                           np.ones(T)], axis=1)
+    prices = jnp.array(prices_np)
+    init_res, Va, Vb = initialise_reclamm_reserves(
+        10000.0, jnp.array([100.0, 1.0]), jnp.array(2.0),
+    )
+    Q_MIN, Q_MAX = 2.0, 16.0
+    common = dict(
+        centeredness_margin=jnp.float64(0.5),
+        daily_price_shift_base=jnp.float64(1.0 - 1.0 / 124000.0),
+        fees=jnp.float64(0.0025),
+        all_sig_variations=ALL_SIG_VARIATIONS_2,
+        ratio_base=jnp.float64(Q_MIN), ratio_max=jnp.float64(Q_MAX),
+        deadband=jnp.float64(0.2), sharpness=jnp.float64(1.0),
+        trigger_alpha=jnp.float64(0.05),
+        max_narrow_log_step=jnp.float64(0.005),
+        trigger_beta=jnp.float64(0.01), magnitude_k=jnp.float64(0.05),
+    )
+
+    reserves_m, _, Va_m, Vb_m = fantasticlamm_full_state(
+        init_res, Va, Vb, prices, trigger_mode="sign_ema_mag", **common,
+    )
+    reserves_s, _, Va_s, Vb_s = fantasticlamm_full_state(
+        init_res, Va, Vb, prices, trigger_mode="sign", **common,
+    )
+
+    def final_ratio(res, Va_arr, Vb_arr):
+        Ra = np.asarray(res[-1, 0]); Rb = np.asarray(res[-1, 1])
+        Vap = float(np.asarray(Va_arr[-1])); Vbp = float(np.asarray(Vb_arr[-1]))
+        L = (Ra + Vap) * (Rb + Vbp)
+        return (L / (Vap * Vbp)) ** 2
+
+    q_mag = final_ratio(reserves_m, Va_m, Vb_m)
+    q_sign = final_ratio(reserves_s, Va_s, Vb_s)
+
+    assert q_sign > 0.5 * Q_MAX, f"sign should stay wide, got Q={q_sign:.2f}"
+    assert q_mag < 0.5 * Q_MAX, f"sign_ema_mag should re-concentrate, got Q={q_mag:.2f}"
 
 
 # ---------------------------------------------------------------------------

@@ -207,17 +207,21 @@ def _fantasticlamm_scan_step_zero_fees(
     deadband,
     sharpness,
     trigger_alpha,
+    trigger_beta,
+    magnitude_k,
+    w_static,
     max_narrow_log_step,
 ):
     """Zero-fee fantasticlamm step: retarget the band, then run reClAMM's step.
 
-    Carry: [reserves (2,), Va, Vb, prev_lp_supply, sign_drift]
+    Carry: [reserves (2,), Va, Vb, prev_lp_supply, sign_drift, ema_slow_spot]
     Input: [prices (2,), lp_supply, desired_price_ratio]
     """
     reserves = carry_list[0]
     Va = carry_list[1]
     Vb = carry_list[2]
     drift_prev = carry_list[4]
+    ema_slow_prev = carry_list[5]
     Ra = reserves[0]
     Rb = reserves[1]
 
@@ -225,9 +229,40 @@ def _fantasticlamm_scan_step_zero_fees(
     lp_supply = input_list[1]
     desired_input = input_list[2]
 
+    # Slow EMA of the pool's spot price; used by EMA-cross triggers as the
+    # reference for "is the price above its recent equilibrium?".
+    spot = (Rb + Vb) / jnp.maximum(Ra + Va, 1e-30)
+    ema_slow_new = (1.0 - trigger_beta) * ema_slow_prev + trigger_beta * spot
+
     if trigger_mode == "sign":
         _, is_above = compute_centeredness(Ra, Rb, Va, Vb)
         drift_new, efficiency = sign_ewma_update(drift_prev, is_above, trigger_alpha)
+        desired = response_curve(
+            efficiency, ratio_base, ratio_max, deadband, sharpness
+        )
+    elif trigger_mode == "sign_ema":
+        sign = jnp.where(spot > ema_slow_new, 1.0, -1.0)
+        drift_new = (1.0 - trigger_alpha) * drift_prev + trigger_alpha * sign
+        efficiency = jnp.clip(jnp.abs(drift_new), 0.0, 1.0)
+        desired = response_curve(
+            efficiency, ratio_base, ratio_max, deadband, sharpness
+        )
+    elif trigger_mode == "sign_ema_mag":
+        deviation = (spot - ema_slow_new) / jnp.maximum(ema_slow_new, 1e-30)
+        sign = jnp.clip(deviation / jnp.maximum(magnitude_k, 1e-30), -1.0, 1.0)
+        drift_new = (1.0 - trigger_alpha) * drift_prev + trigger_alpha * sign
+        efficiency = jnp.clip(jnp.abs(drift_new), 0.0, 1.0)
+        desired = response_curve(
+            efficiency, ratio_base, ratio_max, deadband, sharpness
+        )
+    elif trigger_mode == "sign_hybrid":
+        _, is_above = compute_centeredness(Ra, Rb, Va, Vb)
+        sign_static = jnp.where(is_above, 1.0, -1.0)
+        deviation = (spot - ema_slow_new) / jnp.maximum(ema_slow_new, 1e-30)
+        sign_mag = jnp.clip(deviation / jnp.maximum(magnitude_k, 1e-30), -1.0, 1.0)
+        sign = w_static * sign_static + (1.0 - w_static) * sign_mag
+        drift_new = (1.0 - trigger_alpha) * drift_prev + trigger_alpha * sign
+        efficiency = jnp.clip(jnp.abs(drift_new), 0.0, 1.0)
         desired = response_curve(
             efficiency, ratio_base, ratio_max, deadband, sharpness
         )
@@ -256,6 +291,7 @@ def _fantasticlamm_scan_step_zero_fees(
         new_inner_carry[2],
         new_inner_carry[3],
         drift_new,
+        ema_slow_new,
     ]
     return new_carry, new_reserves
 
@@ -282,25 +318,58 @@ def _fantasticlamm_scan_step_with_fees_and_revenue(
     deadband,
     sharpness,
     trigger_alpha,
+    trigger_beta,
+    magnitude_k,
+    w_static,
     max_narrow_log_step,
 ):
     """With-fees fantasticlamm step: retarget the band, then run reClAMM's step.
 
-    Carry: reClAMM with-fees carry (10 elements) + [sign_drift].
+    Carry: reClAMM with-fees carry (10 elements) + [sign_drift, ema_slow_spot].
     Input: reClAMM with-fees inputs + [desired_price_ratio] (appended last).
     """
     reserves = carry_list[0]
     Va = carry_list[1]
     Vb = carry_list[2]
     drift_prev = carry_list[10]
+    ema_slow_prev = carry_list[11]
     Ra = reserves[0]
     Rb = reserves[1]
 
     desired_input = input_list[-1]
 
+    spot = (Rb + Vb) / jnp.maximum(Ra + Va, 1e-30)
+    ema_slow_new = (1.0 - trigger_beta) * ema_slow_prev + trigger_beta * spot
+
     if trigger_mode == "sign":
         _, is_above = compute_centeredness(Ra, Rb, Va, Vb)
         drift_new, efficiency = sign_ewma_update(drift_prev, is_above, trigger_alpha)
+        desired = response_curve(
+            efficiency, ratio_base, ratio_max, deadband, sharpness
+        )
+    elif trigger_mode == "sign_ema":
+        sign = jnp.where(spot > ema_slow_new, 1.0, -1.0)
+        drift_new = (1.0 - trigger_alpha) * drift_prev + trigger_alpha * sign
+        efficiency = jnp.clip(jnp.abs(drift_new), 0.0, 1.0)
+        desired = response_curve(
+            efficiency, ratio_base, ratio_max, deadband, sharpness
+        )
+    elif trigger_mode == "sign_ema_mag":
+        deviation = (spot - ema_slow_new) / jnp.maximum(ema_slow_new, 1e-30)
+        sign = jnp.clip(deviation / jnp.maximum(magnitude_k, 1e-30), -1.0, 1.0)
+        drift_new = (1.0 - trigger_alpha) * drift_prev + trigger_alpha * sign
+        efficiency = jnp.clip(jnp.abs(drift_new), 0.0, 1.0)
+        desired = response_curve(
+            efficiency, ratio_base, ratio_max, deadband, sharpness
+        )
+    elif trigger_mode == "sign_hybrid":
+        _, is_above = compute_centeredness(Ra, Rb, Va, Vb)
+        sign_static = jnp.where(is_above, 1.0, -1.0)
+        deviation = (spot - ema_slow_new) / jnp.maximum(ema_slow_new, 1e-30)
+        sign_mag = jnp.clip(deviation / jnp.maximum(magnitude_k, 1e-30), -1.0, 1.0)
+        sign = w_static * sign_static + (1.0 - w_static) * sign_mag
+        drift_new = (1.0 - trigger_alpha) * drift_prev + trigger_alpha * sign
+        efficiency = jnp.clip(jnp.abs(drift_new), 0.0, 1.0)
         desired = response_curve(
             efficiency, ratio_base, ratio_max, deadband, sharpness
         )
@@ -337,7 +406,7 @@ def _fantasticlamm_scan_step_with_fees_and_revenue(
         )
     )
 
-    new_carry = list(new_inner_carry) + [drift_new]
+    new_carry = list(new_inner_carry) + [drift_new, ema_slow_new]
     return new_carry, (new_reserves, fee_revenue)
 
 
@@ -360,6 +429,9 @@ def _jax_calc_fantasticlamm_reserves_zero_fees(
     trigger_mode="sign",
     window=60,
     trigger_alpha=0.05,
+    trigger_beta=0.001,
+    magnitude_k=0.05,
+    w_static=0.5,
     ratio_base=1.5,
     ratio_max=16.0,
     deadband=0.3,
@@ -379,6 +451,11 @@ def _jax_calc_fantasticlamm_reserves_zero_fees(
         prices, trigger_mode, window, trigger_alpha,
         ratio_base, ratio_max, deadband, sharpness,
     )
+    # EMA_slow tracks the pool's spot price; init to the pool's t=0 spot so the
+    # slow average isn't biased toward zero during the transient.
+    ema_slow_init = (initial_Vb + initial_reserves[1]) / jnp.maximum(
+        initial_Va + initial_reserves[0], 1e-30,
+    )
 
     scan_fn = Partial(
         _fantasticlamm_scan_step_zero_fees,
@@ -393,12 +470,15 @@ def _jax_calc_fantasticlamm_reserves_zero_fees(
         deadband=deadband,
         sharpness=sharpness,
         trigger_alpha=trigger_alpha,
+        trigger_beta=trigger_beta,
+        magnitude_k=magnitude_k,
+        w_static=w_static,
         max_narrow_log_step=max_narrow_log_step,
     )
 
     carry_init = [
         initial_reserves, initial_Va, initial_Vb,
-        lp_supply_array[0], jnp.float64(0.0),
+        lp_supply_array[0], jnp.float64(0.0), ema_slow_init,
     ]
     _, reserves = scan(scan_fn, carry_init, [prices, lp_supply_array, desired])
     return reserves
@@ -433,6 +513,9 @@ def _jax_calc_fantasticlamm_reserves_and_fee_revenue_with_fees(
     trigger_mode="sign",
     window=60,
     trigger_alpha=0.05,
+    trigger_beta=0.001,
+    magnitude_k=0.05,
+    w_static=0.5,
     ratio_base=1.5,
     ratio_max=16.0,
     deadband=0.3,
@@ -472,6 +555,9 @@ def _jax_calc_fantasticlamm_reserves_and_fee_revenue_with_fees(
         prices, trigger_mode, window, trigger_alpha,
         ratio_base, ratio_max, deadband, sharpness,
     )
+    ema_slow_init = (initial_Vb + initial_reserves[1]) / jnp.maximum(
+        initial_Va + initial_reserves[0], 1e-30,
+    )
 
     scan_fn = Partial(
         _fantasticlamm_scan_step_with_fees_and_revenue,
@@ -494,6 +580,9 @@ def _jax_calc_fantasticlamm_reserves_and_fee_revenue_with_fees(
         deadband=deadband,
         sharpness=sharpness,
         trigger_alpha=trigger_alpha,
+        trigger_beta=trigger_beta,
+        magnitude_k=magnitude_k,
+        w_static=w_static,
         max_narrow_log_step=max_narrow_log_step,
     )
 
@@ -526,6 +615,7 @@ def _jax_calc_fantasticlamm_reserves_and_fee_revenue_with_fees(
         jnp.float64(0.0),  # active_end_step
         jnp.array(False),  # active_enabled
         jnp.float64(0.0),  # sign_drift
+        ema_slow_init,     # ema_slow_spot
     ]
     _, (reserves, fee_revenue) = scan(scan_fn, carry_init, scan_inputs)
     return reserves, fee_revenue
@@ -560,6 +650,9 @@ def _jax_calc_fantasticlamm_reserves_with_fees(
     trigger_mode="sign",
     window=60,
     trigger_alpha=0.05,
+    trigger_beta=0.001,
+    magnitude_k=0.05,
+    w_static=0.5,
     ratio_base=1.5,
     ratio_max=16.0,
     deadband=0.3,
@@ -588,6 +681,9 @@ def _jax_calc_fantasticlamm_reserves_with_fees(
         trigger_mode=trigger_mode,
         window=window,
         trigger_alpha=trigger_alpha,
+        trigger_beta=trigger_beta,
+        magnitude_k=magnitude_k,
+        w_static=w_static,
         ratio_base=ratio_base,
         ratio_max=ratio_max,
         deadband=deadband,

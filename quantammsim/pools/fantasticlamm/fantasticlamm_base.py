@@ -54,6 +54,9 @@ class _FLPoolState(NamedTuple):
     centeredness_scaling: bool
     window: int
     trigger_alpha: jnp.ndarray
+    trigger_beta: jnp.ndarray
+    magnitude_k: jnp.ndarray
+    w_static: jnp.ndarray
     ratio_base: jnp.ndarray
     ratio_max: jnp.ndarray
     deadband: jnp.ndarray
@@ -128,6 +131,18 @@ class FantasticLammBasePool(ReClammPool):
                 params, run_fingerprint, "trigger_alpha",
                 "fantasticlamm_trigger_alpha", 0.05,
             ),
+            trigger_beta=_trigger_value(
+                params, run_fingerprint, "trigger_beta",
+                "fantasticlamm_trigger_beta", 0.001,
+            ),
+            magnitude_k=_trigger_value(
+                params, run_fingerprint, "magnitude_k",
+                "fantasticlamm_magnitude_k", 0.05,
+            ),
+            w_static=_trigger_value(
+                params, run_fingerprint, "w_static",
+                "fantasticlamm_w_static", 0.5,
+            ),
             ratio_base=ratio_base,
             ratio_max=_trigger_value(
                 params, run_fingerprint, "ratio_max",
@@ -153,6 +168,9 @@ class FantasticLammBasePool(ReClammPool):
             trigger_mode=self._TRIGGER_MODE,
             window=s.window,
             trigger_alpha=s.trigger_alpha,
+            trigger_beta=s.trigger_beta,
+            magnitude_k=s.magnitude_k,
+            w_static=s.w_static,
             ratio_base=s.ratio_base,
             ratio_max=s.ratio_max,
             deadband=s.deadband,
