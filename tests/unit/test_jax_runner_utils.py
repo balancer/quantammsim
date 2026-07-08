@@ -1052,7 +1052,7 @@ class TestCreateStaticDict:
         fp = {
             "tokens": ["BTC", "ETH"],
             "optimisation_settings": {"lr": 0.01},  # Should be excluded
-            "startDateString": "2023-01-01",  # Should be excluded
+            "startDateString": "2023-01-01",  # Kept — needed by calibrated noise model
             "chunk_period": 60,
             "weight_interpolation_period": 60,
             "initial_pool_value": 1000000.0,
@@ -1068,7 +1068,9 @@ class TestCreateStaticDict:
         result = create_static_dict(fp, bout_length=1440)
 
         assert "optimisation_settings" not in result
-        assert "startDateString" not in result
+        # startDateString stays in the static dict — the calibrated noise
+        # model needs it in forward passes
+        assert "startDateString" in result
 
     def test_with_overrides(self):
         """Test that overrides are applied."""
