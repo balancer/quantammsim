@@ -641,7 +641,13 @@ def get_binance_vision_data(token, numeraire, root):
         data_type="klines",
         data_frequency="1m"
     )
-    
+
+    # The dumper validates tickers against the live exchangeInfo endpoint, which
+    # is geo-switched to binance.us for US IPs and so hides pairs (e.g. RPLUSDT)
+    # that exist in the vision archive but aren't listed on Binance.US. Skip the
+    # check; a pair with no archive simply downloads nothing.
+    data_dumper.get_list_all_trading_pairs = lambda: [f"{token}{numeraire}"]
+
     # Download all available data
     data_dumper.dump_data(
         tickers=[f"{token}{numeraire}"],
@@ -1079,7 +1085,7 @@ def update_historic_data(token, root):
     agg_dict = {k: v for k, v in agg_dict.items() if k in concated_df_hourly.columns}
 
     # Perform resampling
-    hourly_data = concated_df_hourly.resample("1H").agg(agg_dict).reset_index()
+    hourly_data = concated_df_hourly.resample("1h").agg(agg_dict).reset_index()
 
     # Save hourly data
     hourly_data.to_csv(hourlyPath, index=False)
