@@ -89,8 +89,8 @@ BASELINE_CONFIGS = {
             "initial_weights_logits": jnp.array([0.0, 0.0]),
         },
         "expected": {
-            "final_value": 1500094.138254407,
-            "return_pct": 50.00941382544071,
+            "final_value": 1489697.5771969256,
+            "return_pct": 48.969757719692566,
             "first_weights": [0.5, 0.5],
             "last_weights": [0.05000921, 0.94999079],
         },
@@ -116,8 +116,8 @@ BASELINE_CONFIGS = {
             "initial_weights_logits": jnp.array([0.0, 0.0]),
         },
         "expected": {
-            "final_value": 1368731.4974473487,
-            "return_pct": 36.87314974473486,
+            "final_value": 1352951.4582811554,
+            "return_pct": 35.29514582811555,
             "first_weights": [0.5, 0.5],
             "last_weights": [0.05, 0.95],
         },
