@@ -38,7 +38,9 @@ from scripts.plot_reclamm_optuna_result import (
 BG = "#162536"
 TC = "#E6CE97"
 
-# Train/test split around the Oct 10 flash crash
+# Train/test split around the Oct 10 flash crash. Pairs whose price data
+# starts later (e.g. CoinGecko free tier = last 365 days) can override these
+# with per-pair "train"/"test" (start, end) tuples in PAIR_CONFIGS.
 TRAIN_START = "2025-01-01 00:00:00"
 TRAIN_END   = "2025-10-05 00:00:00"
 TEST_START  = "2025-10-25 00:00:00"
@@ -66,6 +68,29 @@ PAIR_CONFIGS = {
             "2m": 2_000_000,
             "20m": 20_000_000,
         },
+    },
+    "btceth": {
+        # WBTC/WETH pool from the MM artifact (results/mm_noise/meta.json)
+        "tokens": ["BTC", "ETH"],
+        "pool_id": "0xa6f548df93de92",
+        "gas_cost": 1.0,
+        "fees": 0.0025,
+        "tvls": {
+            "5m": 5_000_000,
+        },
+    },
+    "boldusdc": {
+        # Not in the MM artifact — noise model uses the median-pool fallback.
+        # BOLD price data (CoinGecko) only starts 2025-07-09, hence the
+        # shortened train window.
+        "tokens": ["BOLD", "USDC"],
+        "pool_id": "boldusdc",
+        "gas_cost": 1.0,
+        "fees": 0.0005,
+        "tvls": {
+            "1m": 1_000_000,
+        },
+        "train": ("2025-07-15 00:00:00", "2025-10-05 00:00:00"),
     },
 }
 
@@ -98,8 +123,8 @@ def select_best_params(trials, tokens_set, tvl, metric_key="returns_over_hodl"):
             for entry in to:
                 if isinstance(entry, dict) and "returns_over_hodl" in entry:
                     return float(entry["returns_over_hodl"])
-        # If the trial's own objective IS returns_over_hodl, use test_value
-        if t.get("return_val") == "returns_over_hodl":
+        # If the trial's own objective matches the requested metric, use test_value
+        if t.get("return_val") == metric_key:
             return float(t.get("test_value", float("-inf")))
         return float("-inf")
 
@@ -302,7 +327,18 @@ def make_plot_data(all_results, pair_cfg, start, end):
     return configs, time_series, hodl_values, ref_config
 
 
-def run_pair(pair_name, pair_cfg, trials, output_dir):
+def filter_trials_to_window(trials, train_start, train_end):
+    """Keep only trials swept over the given train window."""
+    start_day = train_start.split(" ")[0]
+    end_day = train_end.split(" ")[0]
+    return [
+        t for t in trials
+        if t.get("start_date", "").startswith(start_day)
+        and end_day in t.get("end_date", "")
+    ]
+
+
+def run_pair(pair_name, pair_cfg, trials, output_dir, args=None):
     """Run all TVL variants for a pair, for train and test periods."""
     tokens = pair_cfg["tokens"]
     tokens_set = tuple(sorted(tokens))
@@ -310,9 +346,15 @@ def run_pair(pair_name, pair_cfg, trials, output_dir):
     print(f"  {'/'.join(tokens)} — {pair_name}")
     print(f"{'='*60}")
 
+    # Per-pair window overrides (defaults: the global flash-crash split)
+    train_start, train_end = pair_cfg.get("train", (TRAIN_START, TRAIN_END))
+    test_start, test_end = pair_cfg.get("test", (TEST_START, TEST_END))
+    trials = filter_trials_to_window(trials, train_start, train_end)
+    print(f"  {len(trials)} trials swept over {train_start[:10]} → {train_end[:10]}")
+
     # Build noise arrays for both periods
-    train_noise = build_noise_arrays(pair_cfg, TRAIN_START, TRAIN_END)
-    test_noise = build_noise_arrays(pair_cfg, TEST_START, TEST_END)
+    train_noise = build_noise_arrays(pair_cfg, train_start, train_end)
+    test_noise = build_noise_arrays(pair_cfg, test_start, test_end)
 
     train_results = {}
     test_results = {}
@@ -322,7 +364,8 @@ def run_pair(pair_name, pair_cfg, trials, output_dir):
         print(f"\n  --- {full_label} (TVL=${tvl:,.0f}) ---")
 
         # Select best params for this TVL
-        best = select_best_params(trials, tokens_set, tvl)
+        metric = args.metric if args is not None else "returns_over_hodl"
+        best = select_best_params(trials, tokens_set, tvl, metric_key=metric)
         if best is None:
             print(f"  No results found for {tokens_set} TVL={tvl}")
             continue
@@ -341,9 +384,9 @@ def run_pair(pair_name, pair_cfg, trials, output_dir):
 
         # Train period forward pass
         print(f"  Running train period...")
-        train_result = run_forward(pair_cfg, tvl, params, TRAIN_START, TRAIN_END, train_noise)
+        train_result = run_forward(pair_cfg, tvl, params, train_start, train_end, train_noise)
         source_hash = _trial_hash(best)
-        train_fp = build_fingerprint(pair_cfg, tvl, TRAIN_START, TRAIN_END, train_noise)
+        train_fp = build_fingerprint(pair_cfg, tvl, train_start, train_end, train_noise)
         export_forward_csvs(
             train_result, train_fp, output_dir,
             identifier=f"{pair_name}_{tvl_label}_train",
@@ -356,8 +399,8 @@ def run_pair(pair_name, pair_cfg, trials, output_dir):
 
         # Test period forward pass
         print(f"  Running test period...")
-        test_result = run_forward(pair_cfg, tvl, params, TEST_START, TEST_END, test_noise)
-        test_fp = build_fingerprint(pair_cfg, tvl, TEST_START, TEST_END, test_noise)
+        test_result = run_forward(pair_cfg, tvl, params, test_start, test_end, test_noise)
+        test_fp = build_fingerprint(pair_cfg, tvl, test_start, test_end, test_noise)
         export_forward_csvs(
             test_result, test_fp, output_dir,
             identifier=f"{pair_name}_{tvl_label}_test",
@@ -381,8 +424,8 @@ def run_pair(pair_name, pair_cfg, trials, output_dir):
 
     # Generate plots using existing plotting functions
     for period_name, results_dict, start, end in [
-        ("train", train_results, TRAIN_START, TRAIN_END),
-        ("test", test_results, TEST_START, TEST_END),
+        ("train", train_results, train_start, train_end),
+        ("test", test_results, test_start, test_end),
     ]:
         if not results_dict:
             continue
@@ -406,7 +449,7 @@ def run_pair(pair_name, pair_cfg, trials, output_dir):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--pair", choices=["aave", "cow"], default=None)
+    p.add_argument("--pair", choices=sorted(PAIR_CONFIGS), default=None)
     p.add_argument("--all", action="store_true")
     p.add_argument("--method", default="optuna", choices=["optuna", "cma_es"],
                    help="Which sweep method results to use")
@@ -421,21 +464,14 @@ def main():
     if not args.all and not args.pair:
         p.error("Specify --pair or --all")
 
-    # Load all trials
+    # Load all trials; each pair filters to its own train window in run_pair
     print("Loading sweep results...")
     trials = load_reclamm_results("./results/", metric_key=args.metric)
-
-    # Filter to our training window
-    trials = [
-        t for t in trials
-        if t.get("start_date", "").startswith("2025-01-01")
-        and "2025-10-05" in t.get("end_date", "")
-    ]
-    print(f"  {len(trials)} trials from Jan-Oct 2025 sweep")
+    print(f"  {len(trials)} reCLAMM trials loaded")
 
     for pair_name in pairs:
         pair_cfg = PAIR_CONFIGS[pair_name]
-        run_pair(pair_name, pair_cfg, trials, args.output_dir)
+        run_pair(pair_name, pair_cfg, trials, args.output_dir, args=args)
 
     print("\nDone.")
 

@@ -49,6 +49,7 @@ CONFIGS=(
     "COW   ETH  0xd321300ef77067  3.0   0.003   cow_500k   500000"
     "COW   ETH  0xd321300ef77067  3.0   0.003   cow_2m     2000000"
     "COW   ETH  0xd321300ef77067  3.0   0.003   cow_20m    20000000"
+    "BTC   ETH  0xa6f548df93de92  1.0   0.0025  btceth_5m  5000000"
 )
 
 OUTDIR="results/full_sweep"
