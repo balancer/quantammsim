@@ -53,6 +53,10 @@ from quantammsim.core_simulator.forward_pass import (
     forward_pass_nograd,
     _calculate_return_value,
 )
+from quantammsim.core_simulator.dynamic_inputs import (
+    DynamicInputFrames,
+    materialize_dynamic_inputs,
+)
 from quantammsim.core_simulator.windowing_utils import get_indices, filter_coarse_weights_by_data_indices
 
 import hashlib
@@ -80,7 +84,7 @@ from quantammsim.core_simulator.result_exporter import (
 
 from quantammsim.runners.jax_runner_utils import (
     Hashabledict,
-    get_trades_and_fees,
+    prepare_dynamic_inputs,
     get_unique_tokens,
     OptunaManager,
     generate_evaluation_points,
@@ -159,7 +163,10 @@ def _build_scan_infrastructure(
     run_scan_chunk : callable
         ``@jit`` wrapped ``lax.scan(scan_body, carry, None, length=chunk_size)``.
     scan_body : callable
-        The raw scan body (for partial-chunk Python fallback).
+        The raw scan body.
+    run_scan_step : callable
+        ``@jit`` wrapped single-step execution used for remainder iterations so
+        partial chunks follow the same numerics as the full scan path.
     """
     # Local aliases for closed-over constants
     _start_idx = start_idx
@@ -309,7 +316,11 @@ def _build_scan_infrastructure(
     def _run_scan_chunk(carry):
         return lax.scan(scan_body, carry, None, length=chunk_size)
 
-    return _run_scan_chunk, scan_body
+    @jit
+    def _run_scan_step(carry):
+        return scan_body(carry, None)
+
+    return _run_scan_chunk, scan_body, _run_scan_step
 
 
 def train_on_historic_data(
@@ -673,6 +684,15 @@ def _train_on_historic_data_impl(
             "n_assets": n_assets,
             "training_data_kind": run_fingerprint["optimisation_settings"]["training_data_kind"],
             "do_trades": False,
+            "dynamic_input_flags": {
+                "use_dynamic_inputs": False,
+                "has_trades": False,
+                "has_dynamic_fees": False,
+                "has_dynamic_gas_cost": False,
+                "has_dynamic_arb_fees": False,
+                "has_lp_supply": False,
+                "has_reclamm_price_ratio_updates": False,
+            },
         },
     )
 
@@ -694,6 +714,7 @@ def _train_on_historic_data_impl(
     continuous_static_dict["bout_length"] = original_bout_length + data_dict["bout_length_test"]
     partial_forward_pass_nograd_batch_continuous = Partial(
         forward_pass_nograd,
+        dynamic_inputs=None,
         static_dict=Hashabledict(continuous_static_dict),
         pool=pool,
     )
@@ -834,11 +855,12 @@ def _train_on_historic_data_impl(
         )
 
         if config_key in _scan_infra_cache:
-            _run_scan_chunk, scan_body = _scan_infra_cache[config_key]
+            _run_scan_chunk, scan_body, _run_scan_step = _scan_infra_cache[config_key]
         else:
             # Build scan-compatible update (prices as explicit arg, not closure)
             partial_step_no_prices = Partial(
                 forward_pass,
+                dynamic_inputs=None,
                 static_dict=Hashabledict(base_static_dict),
                 pool=pool,
             )
@@ -852,7 +874,7 @@ def _train_on_historic_data_impl(
                     partial_step_no_prices, params_in_axes_dict,
                 )
 
-            _run_scan_chunk, scan_body = _build_scan_infrastructure(
+            _run_scan_chunk, scan_body, _run_scan_step = _build_scan_infrastructure(
                 chunk_size,
                 partial_step_no_prices=partial_step_no_prices,
                 forward_nograd_continuous=partial_forward_pass_nograd_continuous,
@@ -878,7 +900,7 @@ def _train_on_historic_data_impl(
                 swa_freq=swa_freq,
                 n_parameter_sets=n_parameter_sets,
             )
-            _scan_infra_cache[config_key] = (_run_scan_chunk, scan_body)
+            _scan_infra_cache[config_key] = (_run_scan_chunk, scan_body, _run_scan_step)
 
         # ── Initialize carry (prices & nan_bank in carry, not closures) ──
         carry = {
@@ -933,7 +955,7 @@ def _train_on_historic_data_impl(
                     "params": {k: [] for k in carry["params"]},
                 }
                 for _ in range(actual):
-                    carry, step_out = scan_body(carry, None)
+                    carry, step_out = _run_scan_step(carry)
                     all_per_steps["objective"].append(step_out["objective"])
                     all_per_steps["train_metrics"].append(step_out["train_metrics"])
                     all_per_steps["test_metrics"].append(step_out["test_metrics"])
@@ -1276,7 +1298,9 @@ def _train_on_historic_data_impl(
         return selected_params
     elif run_fingerprint["optimisation_settings"]["method"] == "optuna":
 
-        n_evaluation_points = 20
+        n_evaluation_points = run_fingerprint["optimisation_settings"].get(
+            "optuna_settings", {}
+        ).get("n_evaluation_points", 20)
         min_spacing = data_dict["bout_length"] // 2  # E
 
         run_fingerprint["optimisation_settings"]["n_parameter_sets"] = 1
@@ -1395,7 +1419,14 @@ def _train_on_historic_data_impl(
                     )
                     train_objectives.append(train_value)
 
-                mean_train_value = jnp.sum(jnp.array(train_objectives)) / len(train_objectives)
+                _train_arr = jnp.array(train_objectives)
+                _robust_temp = run_fingerprint.get("optimisation_settings", {}).get(
+                    "robust_temperature", None)
+                if _robust_temp is not None:
+                    _weights = jax.nn.softmax(-_train_arr / _robust_temp)
+                    mean_train_value = jnp.sum(_weights * _train_arr)
+                else:
+                    mean_train_value = jnp.mean(_train_arr)
                 train_value = _calculate_return_value(
                     run_fingerprint["return_val"],
                     train_outputs["reserves"],
@@ -1432,6 +1463,17 @@ def _train_on_historic_data_impl(
                     initial_reserves=train_outputs["reserves"][0],
                 )
 
+                # Reject catastrophic in-sample configurations
+                min_train_ret_over_hodl = run_fingerprint["optimisation_settings"][
+                    "optuna_settings"].get("min_train_returns_over_hodl", None)
+                if min_train_ret_over_hodl is not None:
+                    if float(train_returns_over_hodl) < min_train_ret_over_hodl:
+                        optuna_manager.logger.info(
+                            f"Training {trial.number}, REJECTED:"
+                            f" ret_over_hodl={train_returns_over_hodl:.4f}"
+                            f" < {min_train_ret_over_hodl}")
+                        return float("-inf")
+
                 # Test period evaluation using continuous forward pass
                 # This ensures test metrics reflect continuous simulation from training
                 continuous_outputs = partial_forward_pass_continuous_optuna(
@@ -1455,6 +1497,20 @@ def _train_on_historic_data_impl(
                     original_bout_length,
                     data_dict["bout_length_test"],
                     continuous_prices,
+                )
+
+                # Full train-period metric dict, parallel to the BFGS/CMA-ES
+                # save_multi_params path. Persisted on the trial so
+                # save_optuna_results_sgd_format can write the same
+                # list-of-dict schema other methods use.
+                train_dict_for_metrics = {
+                    "value": train_outputs["value"],
+                    "reserves": train_outputs["reserves"],
+                }
+                if "fee_revenue" in train_outputs:
+                    train_dict_for_metrics["fee_revenue"] = train_outputs["fee_revenue"]
+                train_metrics_dict = calculate_period_metrics(
+                    train_dict_for_metrics, train_outputs["prices"],
                 )
 
                 # Calculate validation metrics
@@ -1566,6 +1622,14 @@ def _train_on_historic_data_impl(
                 trial.set_user_attr("continuous_test_return", continuous_test_metrics["return"])
                 trial.set_user_attr("continuous_test_returns_over_hodl", continuous_test_metrics["returns_over_hodl"])
                 trial.set_user_attr("continuous_test_returns_over_uniform_hodl", continuous_test_metrics["returns_over_uniform_hodl"])
+                # Full metric dicts for save_optuna_results_sgd_format —
+                # match the list-of-dict schema produced by save_multi_params
+                # (BFGS / CMA-ES). Plain floats so optuna can persist them.
+                # `.item()` handles 0-d and (1,) JAX arrays alike.
+                def _scalarise(d):
+                    return {k: float(np.asarray(v).reshape(-1)[0]) for k, v in d.items()}
+                trial.set_user_attr("train_metrics_dict", _scalarise(train_metrics_dict))
+                trial.set_user_attr("continuous_test_metrics_dict", _scalarise(continuous_test_metrics))
 
                 if run_fingerprint["optimisation_settings"]["optuna_settings"][
                     "multi_objective"
@@ -2166,6 +2230,9 @@ def _train_on_historic_data_impl(
         tol = cma_settings["tol"]
         n_eval_points = cma_settings["n_evaluation_points"]
         population_size_override = cma_settings.get("population_size")
+        overfitting_penalty = float(cma_settings.get("overfitting_penalty", 0.0))
+        # Penalty only meaningful when there's a held-out validation period.
+        apply_penalty = overfitting_penalty > 0.0 and val_fraction > 0
 
         # Generate fixed evaluation points (same as BFGS/optuna)
         min_spacing = data_dict["bout_length"] // 2
@@ -2177,6 +2244,23 @@ def _train_on_historic_data_impl(
             min_spacing,
             run_fingerprint["optimisation_settings"]["initial_random_key"],
         )
+        n_train_eval = len(evaluation_starts)
+        if apply_penalty:
+            # Sample evaluation points from the validation period and append
+            # them to the fixed start indexes. The split point n_train_eval
+            # separates train-period objectives from val-period objectives.
+            val_eval_starts = generate_evaluation_points(
+                val_start_idx,
+                data_dict["end_idx"],
+                bout_length_window,
+                n_eval_points,
+                min_spacing,
+                run_fingerprint["optimisation_settings"]["initial_random_key"] + 1,
+            )
+            evaluation_starts = list(evaluation_starts) + list(val_eval_starts)
+            if verbose:
+                print(f"[CMA-ES] Overfitting penalty {overfitting_penalty} active: "
+                      f"{n_train_eval} train + {len(val_eval_starts)} val eval points")
         fixed_start_indexes = jnp.array(
             [(s, 0) for s in evaluation_starts], dtype=jnp.int32
         )
@@ -2239,19 +2323,65 @@ def _train_on_historic_data_impl(
 
         # Build eval function: population (lam, n_flat) -> fitness (lam,)
         # Each individual is evaluated as -objective (we minimise, objective is maximised)
-        def eval_single(flat_x):
-            p = unravel_fn(flat_x)
-            return -batched_obj(p, fixed_start_indexes)
+        if apply_penalty:
+            # Mirror the optuna penalty: penalised = mean_train - α·max(0, mean_train - mean_val)
+            _alpha = jnp.asarray(overfitting_penalty, dtype=flat_x0_template.dtype)
+            _split = n_train_eval
+            def eval_single(flat_x):
+                p = unravel_fn(flat_x)
+                per_pt = batched_pts(p, fixed_start_indexes)
+                mean_train = jnp.mean(per_pt[:_split])
+                mean_val = jnp.mean(per_pt[_split:])
+                gap = mean_train - mean_val
+                penalised = mean_train - _alpha * jnp.maximum(0.0, gap)
+                return -penalised
+        else:
+            def eval_single(flat_x):
+                p = unravel_fn(flat_x)
+                return -batched_obj(p, fixed_start_indexes)
 
         # Un-jitted vmap for fusion into lax.while_loop's XLA program
         eval_fn_raw = vmap(eval_single)
         # Standalone jitted version kept for any verbose/diagnostic use
         eval_population = jit(eval_fn_raw)
 
+        # Build box constraints from parameter_config (if available)
+        param_config = run_fingerprint.get("optimisation_settings", {}).get(
+            "optuna_settings", {}
+        ).get("parameter_config", {})
+        if param_config:
+            # Construct lower/upper bound pytrees matching params_single structure
+            lb_dict = {}
+            ub_dict = {}
+            for k, v in params_single.items():
+                if k == "subsidary_params":
+                    continue
+                cfg = param_config.get(k)
+                if cfg is not None:
+                    lo = jnp.full_like(jnp.asarray(v, dtype=flat_x0_template.dtype), cfg["low"])
+                    hi = jnp.full_like(jnp.asarray(v, dtype=flat_x0_template.dtype), cfg["high"])
+                else:
+                    lo = jnp.full_like(jnp.asarray(v, dtype=flat_x0_template.dtype), -1e30)
+                    hi = jnp.full_like(jnp.asarray(v, dtype=flat_x0_template.dtype), 1e30)
+                lb_dict[k] = lo
+                ub_dict[k] = hi
+            lb_dict["subsidary_params"] = params_single.get("subsidary_params", [])
+            ub_dict["subsidary_params"] = params_single.get("subsidary_params", [])
+            flat_lb, _ = ravel_pytree(lb_dict)
+            flat_ub, _ = ravel_pytree(ub_dict)
+            if verbose:
+                print(f"[CMA-ES] Box constraints: {n_flat} dims bounded")
+        else:
+            flat_lb = None
+            flat_ub = None
+
         @jit
         def _run_one_restart(flat_x0, rng_key):
             state = init_cmaes(flat_x0, sigma0)
-            return run_cmaes(state, rng_key, eval_fn_raw, cma_params, n_generations, tol)
+            return run_cmaes(
+                state, rng_key, eval_fn_raw, cma_params, n_generations, tol,
+                lower_bounds=flat_lb, upper_bounds=flat_ub,
+            )
 
         # Keep initial params for saving
         initial_params = deepcopy(params)
@@ -2478,14 +2608,10 @@ def do_run_on_historic_data(
     root=None,
     price_data=None,
     verbose=False,
-    raw_trades=None,
     fees=None,
     gas_cost=None,
     arb_fees=None,
-    fees_df=None,
-    gas_cost_df=None,
-    arb_fees_df=None,
-    lp_supply_df=None,
+    dynamic_input_frames: DynamicInputFrames = None,
     do_test_period=False,
     low_data_mode=False,
     preslice_burnin=True,
@@ -2511,23 +2637,14 @@ def do_run_on_historic_data(
         Pre-loaded price data.  When None, loaded from parquet files.
     verbose : bool, optional
         Print progress information (default False).
-    raw_trades : DataFrame, optional
-        Real trade data to inject.  Columns: unix timestamp (minute),
-        token_in, token_out, amount_in.
     fees : float, optional
         Swap fee override (e.g. 0.003 for 30 bps).
     gas_cost : float, optional
         Gas cost override per transaction.
     arb_fees : float, optional
         Arbitrageur fee override.
-    fees_df : DataFrame, optional
-        Time-varying swap fees (columns: unix, fee).
-    gas_cost_df : DataFrame, optional
-        Time-varying gas costs (columns: unix, gas_cost).
-    arb_fees_df : DataFrame, optional
-        Time-varying arb fees (columns: unix, arb_fee).
-    lp_supply_df : DataFrame, optional
-        Time-varying LP supply changes.
+    dynamic_input_frames : DynamicInputFrames, optional
+        Optional container of trades / fee / gas / arb / LP supply DataFrames.
     do_test_period : bool, optional
         If True, also run the OOS test period defined by
         ``endDateString`` to ``endTestDateString`` (default False).
@@ -2572,14 +2689,20 @@ def do_run_on_historic_data(
 
     np.random.seed(0)
 
-    dynamic_inputs_dict = get_trades_and_fees(
+    dynamic_inputs_dict = prepare_dynamic_inputs(
         run_fingerprint,
-        raw_trades,
-        fees_df,
-        gas_cost_df,
-        arb_fees_df,
-        lp_supply_df,
+        dynamic_input_frames=dynamic_input_frames,
         do_test_period=do_test_period,
+    )
+    train_dynamic_inputs = (
+        dynamic_inputs_dict["train_dynamic_inputs"]
+        if dynamic_inputs_dict["dynamic_input_flags"]["use_dynamic_inputs"]
+        else None
+    )
+    test_dynamic_inputs = (
+        dynamic_inputs_dict.get("test_dynamic_inputs")
+        if dynamic_inputs_dict["dynamic_input_flags"]["use_dynamic_inputs"]
+        else None
     )
 
     # Load price data if not provided
@@ -2624,7 +2747,8 @@ def do_run_on_historic_data(
             "fees": fees if fees is not None else run_fingerprint["fees"],
             "arb_fees": arb_fees if arb_fees is not None else run_fingerprint["arb_fees"],
             "gas_cost": gas_cost if gas_cost is not None else run_fingerprint["gas_cost"],
-            "do_trades": False if raw_trades is None else run_fingerprint["do_trades"],
+            "do_trades": dynamic_inputs_dict["dynamic_input_flags"]["has_trades"],
+            "dynamic_input_flags": dynamic_inputs_dict["dynamic_input_flags"],
             # Include date strings for run-time use
             "startDateString": run_fingerprint["startDateString"],
             "endDateString": run_fingerprint["endDateString"],
@@ -2680,10 +2804,7 @@ def do_run_on_historic_data(
             param,
             (data_dict["start_idx"], 0),
             data_dict["prices"],
-            dynamic_inputs_dict["train_period_trades"],
-            dynamic_inputs_dict["fees_array"],
-            dynamic_inputs_dict["gas_cost_array"],
-            dynamic_inputs_dict["arb_fees_array"],
+            train_dynamic_inputs,
         )
         if low_data_mode:
             output_dict["final_prices"] = output_dict["prices"][-1]
@@ -2699,10 +2820,7 @@ def do_run_on_historic_data(
                 param,
                 (data_dict["start_idx_test"], 0),
                 data_dict["prices"],
-                dynamic_inputs_dict["test_period_trades"],
-                dynamic_inputs_dict["test_fees_array"],
-                dynamic_inputs_dict["test_gas_cost_array"],
-                dynamic_inputs_dict["test_arb_fees_array"],
+                test_dynamic_inputs,
             )
             if low_data_mode:
                 output_dict_test["final_prices"] = output_dict_test["prices"][-1]
@@ -2741,14 +2859,10 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     root=None,
     price_data=None,
     verbose=False,
-    raw_trades=None,
     fees=None,
     gas_cost=None,
     arb_fees=None,
-    fees_df=None,
-    gas_cost_df=None,
-    arb_fees_df=None,
-    lp_supply_df=None,
+    dynamic_input_frames: DynamicInputFrames = None,
     do_test_period=False,
     low_data_mode=False,
 ):
@@ -2778,22 +2892,14 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         Pre-loaded price data.
     verbose : bool, optional
         Print progress (default False).
-    raw_trades : DataFrame, optional
-        Real trade data to inject.
     fees : float, optional
         Swap fee override.
     gas_cost : float, optional
         Gas cost override.
     arb_fees : float, optional
         Arbitrageur fee override.
-    fees_df : DataFrame, optional
-        Time-varying swap fees.
-    gas_cost_df : DataFrame, optional
-        Time-varying gas costs.
-    arb_fees_df : DataFrame, optional
-        Time-varying arb fees.
-    lp_supply_df : DataFrame, optional
-        Time-varying LP supply changes.
+    dynamic_input_frames : DynamicInputFrames, optional
+        Optional container of trades / fee / gas / arb / LP supply DataFrames.
     do_test_period : bool, optional
         Run OOS test period (default False).
     low_data_mode : bool, optional
@@ -2832,13 +2938,9 @@ def do_run_on_historic_data_with_provided_coarse_weights(
 
     np.random.seed(0)
 
-    dynamic_inputs_dict = get_trades_and_fees(
+    dynamic_inputs_dict = prepare_dynamic_inputs(
         run_fingerprint,
-        raw_trades,
-        fees_df,
-        gas_cost_df,
-        arb_fees_df,
-        lp_supply_df,
+        dynamic_input_frames=dynamic_input_frames,
         do_test_period=do_test_period,
     )
 
@@ -2881,7 +2983,8 @@ def do_run_on_historic_data_with_provided_coarse_weights(
             "fees": fees if fees is not None else run_fingerprint["fees"],
             "arb_fees": arb_fees if arb_fees is not None else run_fingerprint["arb_fees"],
             "gas_cost": gas_cost if gas_cost is not None else run_fingerprint["gas_cost"],
-            "do_trades": False if raw_trades is None else run_fingerprint["do_trades"],
+            "do_trades": dynamic_inputs_dict["dynamic_input_flags"]["has_trades"],
+            "dynamic_input_flags": dynamic_inputs_dict["dynamic_input_flags"],
             # Include date strings for run-time use
             "startDateString": run_fingerprint["startDateString"],
             "endDateString": run_fingerprint["endDateString"],
@@ -2912,10 +3015,15 @@ def do_run_on_historic_data_with_provided_coarse_weights(
         initial_weights,
         minimum_weight,
         params,
+        jnp.zeros_like(initial_weights),
+        jnp.ones_like(initial_weights),
         run_fingerprint["max_memory_days"],
         chunk_period,
         chunk_period,
         1.0,
+        False,
+        False,
+        False,
         False,
     )
 
@@ -2948,78 +3056,35 @@ def do_run_on_historic_data_with_provided_coarse_weights(
     #     weights=HashableArrayWrapper(weights),
     #     initial_reserves=HashableArrayWrapper(params["initial_reserves"]),
     # )
-    fees_array = dynamic_inputs_dict.get("fees_array")
-    arb_thresh_array = dynamic_inputs_dict.get("gas_cost_array")
-    arb_fees_array = dynamic_inputs_dict.get("arb_fees_array")
-    trade_array = dynamic_inputs_dict.get("trades")
-    lp_supply_array = dynamic_inputs_dict.get("lp_supply_array")
-
-    if fees_array is None:
-        fees_array = jnp.array([static_dict["fees"]])
-    if arb_thresh_array is None:
-        arb_thresh_array = jnp.array([static_dict["gas_cost"]])
-    if arb_fees_array is None:
-        arb_fees_array = jnp.array([static_dict["arb_fees"]])
-
-        # initial_pool_value = run_fingerprint["initial_pool_value"]
-        # initial_value_per_token = arb_acted_upon_weights[0] * initial_pool_value
-        # initial_reserves = initial_value_per_token / arb_acted_upon_local_prices[0]
-
+    dynamic_input_flags = dynamic_inputs_dict["dynamic_input_flags"]
+    dynamic_inputs = dynamic_inputs_dict["train_dynamic_inputs"]
     initial_reserves = params["initial_reserves"]
-
-    # any of fees_array, arb_thresh_array, arb_fees_array, trade_array, and lp_supply_array
-    # can be singletons, in which case we repeat them for the length of the bout.
-
-    # Determine the maximum leading dimension
     max_len = bout_length - 1
 
     if run_fingerprint["arb_frequency"] != 1:
         max_len = max_len // run_fingerprint["arb_frequency"]
-
-    fees_array = fees_array[:max_len]
-    arb_thresh_array = arb_thresh_array[:max_len]
-    arb_thresh_array = arb_thresh_array * 0.0
-    arb_fees_array = arb_fees_array[:max_len]
-    if lp_supply_array is not None:
-        lp_supply_array = lp_supply_array[:max_len]
-    if trade_array is not None:
-        trade_array = trade_array[:max_len]
-    # Broadcast input arrays to match the maximum leading dimension.
-    # If they are singletons, this will just repeat them for the length of the bout.
-    # If they are arrays of length bout_length, this will cause no change.
-    fees_array_broadcast = jnp.broadcast_to(
-        fees_array, (max_len,) + fees_array.shape[1:]
+    materialized_inputs = materialize_dynamic_inputs(
+        dynamic_inputs,
+        dynamic_input_flags,
+        static_dict,
+        scan_len=max_len,
+        do_trades=run_fingerprint["do_trades"],
+        dtype=local_prices.dtype,
     )
-    arb_thresh_array_broadcast = jnp.broadcast_to(
-        arb_thresh_array, (max_len,) + arb_thresh_array.shape[1:]
-    )
-    arb_fees_array_broadcast = jnp.broadcast_to(
-        arb_fees_array, (max_len,) + arb_fees_array.shape[1:]
-    )
-    # if lp_supply_array is not provided, we set it to a constant of 1.0
-    if lp_supply_array is None:
-        lp_supply_array = jnp.array(1.0)
-
-    lp_supply_array_broadcast = jnp.broadcast_to(
-        lp_supply_array, (max_len,) + lp_supply_array.shape[1:]
-    )
-    # if we are doing trades, the trades array must be of the same length as the other arrays
-    if run_fingerprint["do_trades"]:
-        assert trade_array.shape[0] == max_len
     protocol_fee_split = run_fingerprint.get("protocol_fee_split", 0.0)
     reserves = _jax_calc_quantAMM_reserves_with_dynamic_inputs(
         initial_reserves,
         weights,
         local_prices,
-        fees_array_broadcast,
-        arb_thresh_array_broadcast,
-        arb_fees_array_broadcast,
+        materialized_inputs.fees,
+        materialized_inputs.gas_cost,
+        materialized_inputs.arb_fees,
         jnp.array(static_dict["all_sig_variations"]),
-        None,
+        materialized_inputs.trades,
         run_fingerprint["do_trades"],
         run_fingerprint["do_arb"],
         run_fingerprint["noise_trader_ratio"],
-        lp_supply_array_broadcast,
+        materialized_inputs.lp_supply,
         protocol_fee_split=protocol_fee_split,
     )
 

@@ -43,7 +43,9 @@ def forward_fill_ohlcv_data(df, token):
         end=pd.to_datetime(df.index.max(), unit="ms"),
         freq="1min",
     )
-    full_index = full_index.astype(np.int64) // 10**6
+    # int64 cast of a DatetimeIndex is unit-dependent on pandas>=3 (this index
+    # is datetime64[ms] there, not [ns]), so convert to ms explicitly.
+    full_index = (full_index - pd.Timestamp(0)) // pd.Timedelta(milliseconds=1)
     # Reindex with the complete minute-level index
     df = df.reindex(full_index)
 

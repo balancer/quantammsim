@@ -15,6 +15,12 @@ from quantammsim.pools.G3M.optimal_n_pool_arb import (
     parallelised_optimal_trade_sifter,
 )
 from quantammsim.pools.G3M.G3M_trades import jitted_G3M_cond_trade
+from quantammsim.pools.noise_trades import calculate_reserves_after_noise_trade
+from quantammsim.pools.reCLAMM.reclamm_reserves import (
+    reclamm_mm_observed_noise_volume,
+    reclamm_market_linear_noise_volume,
+    reclamm_calibrated_noise_volume,
+)
 
 
 DEFAULT_BACKEND = default_backend()
@@ -62,7 +68,7 @@ _jax_calc_balancer_reserve_ratios = jit(
 )
 
 
-@partial(jit, static_argnums=(5,))
+@partial(jit, static_argnums=(5, 6))
 def _jax_calc_balancer_reserves_with_fees_scan_function_using_precalcs(
     carry_list,
     prices_and_precalcs,
@@ -70,9 +76,14 @@ def _jax_calc_balancer_reserves_with_fees_scan_function_using_precalcs(
     tokens_to_drop,
     active_trade_directions,
     n,
+    noise_model="ratio",
     gamma=0.997,
     arb_thresh=0.0,
     arb_fees=0.0,
+    noise_trader_ratio=0.0,
+    protocol_fee_split=0.0,
+    seconds_per_step=60.0,
+    noise_params=None,
 ):
     """
     Calculate changes in AMM reserves considering fees 
@@ -147,7 +158,7 @@ def _jax_calc_balancer_reserves_with_fees_scan_function_using_precalcs(
         tokens_to_drop,
         gamma,
         n,
-        0,
+        -1e-15,
     )
 
     optimal_arb_trade = jnp.where(
@@ -174,6 +185,77 @@ def _jax_calc_balancer_reserves_with_fees_scan_function_using_precalcs(
 
     reserves = jnp.where(do_price_arb_trade, post_price_reserves, prev_reserves)
 
+    # --- Noise model dispatch (non-dynamic path) ---
+    if noise_model == "ratio":
+        if_noise = noise_trader_ratio > 0
+        applied_trade = reserves - prev_reserves
+        noisy = calculate_reserves_after_noise_trade(
+            applied_trade, reserves, prices, noise_trader_ratio, gamma,
+        )
+        reserves = jnp.where(if_noise, noisy, reserves)
+    elif noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
+        from quantammsim.pools.reCLAMM.reclamm_reserves import (
+            reclamm_tsoukalas_sqrt_noise_volume,
+            reclamm_tsoukalas_log_noise_volume,
+            reclamm_loglinear_noise_volume,
+        )
+        volatility = prices_and_precalcs[4]
+        arb_volume = 0.5 * jnp.sum(jnp.abs(reserves - prev_reserves) * prices)
+        effective_value = (reserves * prices).sum()
+        _np = noise_params if noise_params is not None else {}
+        if noise_model == "tsoukalas_sqrt":
+            noise_vol = reclamm_tsoukalas_sqrt_noise_volume(
+                effective_value, gamma, volatility, arb_volume, _np)
+        elif noise_model == "tsoukalas_log":
+            noise_vol = reclamm_tsoukalas_log_noise_volume(
+                effective_value, gamma, volatility, arb_volume, _np)
+        else:
+            noise_vol = reclamm_loglinear_noise_volume(
+                effective_value, gamma, volatility, arb_volume, _np)
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_total = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_income = noise_fee_total * (1.0 - protocol_fee_split)
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        reserves = reserves * scale
+    elif noise_model == "calibrated":
+        volatility = prices_and_precalcs[4]
+        dow_sin = prices_and_precalcs[5]
+        dow_cos = prices_and_precalcs[6]
+        arb_volume = 0.5 * jnp.sum(jnp.abs(reserves - prev_reserves) * prices)
+        effective_value = (reserves * prices).sum()
+        _np = noise_params if noise_params is not None else {}
+        noise_vol = reclamm_calibrated_noise_volume(
+            effective_value, gamma, volatility, arb_volume, dow_sin, dow_cos, _np)
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_total = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_income = noise_fee_total * (1.0 - protocol_fee_split)
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        reserves = reserves * scale
+    elif noise_model == "market_linear":
+        noise_base = prices_and_precalcs[4]
+        noise_tvl_coeff = prices_and_precalcs[5]
+        effective_value = (reserves * prices).sum()
+        _np = noise_params if noise_params is not None else {}
+        noise_vol = reclamm_market_linear_noise_volume(
+            effective_value, noise_base, noise_tvl_coeff,
+            tvl_mean=_np.get("tvl_mean", 0.0), tvl_std=_np.get("tvl_std", 1.0))
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_total = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_income = noise_fee_total * (1.0 - protocol_fee_split)
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        reserves = reserves * scale
+    elif noise_model == "mm_observed":
+        noise_base = prices_and_precalcs[4]
+        competitor_tvl = prices_and_precalcs[5]
+        effective_value = (reserves * prices).sum()
+        noise_vol = reclamm_mm_observed_noise_volume(
+            effective_value, noise_base, competitor_tvl)
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_total = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_income = noise_fee_total * (1.0 - protocol_fee_split)
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        reserves = reserves * scale
+
     counter += 1
     return [
         prices,
@@ -182,7 +264,7 @@ def _jax_calc_balancer_reserves_with_fees_scan_function_using_precalcs(
     ], reserves
 
 
-@jit
+@partial(jit, static_argnums=(), static_argnames=("noise_model",))
 def _jax_calc_balancer_reserves_with_fees_using_precalcs(
     initial_reserves,
     weights,
@@ -191,6 +273,17 @@ def _jax_calc_balancer_reserves_with_fees_using_precalcs(
     arb_thresh=0.0,
     arb_fees=0.0,
     all_sig_variations=None,
+    noise_model="ratio",
+    noise_trader_ratio=0.0,
+    protocol_fee_split=0.0,
+    seconds_per_step=60.0,
+    noise_params=None,
+    volatility_array=None,
+    dow_sin_array=None,
+    dow_cos_array=None,
+    noise_base_array=None,
+    noise_tvl_coeff_array=None,
+    competitor_tvl_array=None,
 ):
     """
     Calculate AMM reserves considering fees and arbitrage opportunities using signature variations,
@@ -260,6 +353,11 @@ def _jax_calc_balancer_reserves_with_fees_using_precalcs(
         n=n_assets,
         tokens_to_drop=tokens_to_drop,
         active_trade_directions=active_trade_directions,
+        noise_model=noise_model,
+        noise_trader_ratio=noise_trader_ratio,
+        protocol_fee_split=protocol_fee_split,
+        seconds_per_step=seconds_per_step,
+        noise_params=noise_params,
     )
 
     carry_list_init = [
@@ -267,21 +365,38 @@ def _jax_calc_balancer_reserves_with_fees_using_precalcs(
         initial_reserves,
         0,
     ]
+
+    scan_inputs = [
+        prices,
+        active_initial_weights,
+        per_asset_ratios,
+        all_other_assets_ratios,
+    ]
+
+    # Append noise arrays at position 4+ in prices_and_precalcs
+    if noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
+        scan_inputs.append(volatility_array)
+    elif noise_model == "calibrated":
+        scan_inputs.append(volatility_array)
+        scan_inputs.append(dow_sin_array)
+        scan_inputs.append(dow_cos_array)
+    elif noise_model == "market_linear":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(noise_tvl_coeff_array)
+    elif noise_model == "mm_observed":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(competitor_tvl_array)
+
     _, reserves = scan(
         scan_fn,
         carry_list_init,
-        [
-            prices,
-            active_initial_weights,
-            per_asset_ratios,
-            all_other_assets_ratios,
-        ],
+        scan_inputs,
     )
 
     return reserves
 
 
-@partial(jit, static_argnums=(6, 7, 8))
+@partial(jit, static_argnums=(6, 7, 8, 9))
 def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using_precalcs(
     carry_list,
     input_list,
@@ -291,7 +406,11 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     active_trade_directions,
     n,
     do_trades,
-    do_arb
+    do_arb,
+    noise_model="ratio",
+    protocol_fee_split=0.0,
+    seconds_per_step=60.0,
+    noise_params=None,
 ):
     """
     Calculate changes in AMM reserves considering fees 
@@ -350,6 +469,7 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     prev_reserves = carry_list[1]
 
     counter = carry_list[2]
+    prev_lp_supply = carry_list[3]
 
     # input_list contains weights, prices, precalcs and fee/arb amounts
     prices = input_list[0]
@@ -360,6 +480,15 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
     arb_thresh = input_list[5]
     arb_fees = input_list[6]
     trade = input_list[7]
+    lp_supply = input_list[8]
+
+    # Scale reserves for LP supply changes (proportional deposits/withdrawals)
+    lp_supply_change = lp_supply != prev_lp_supply
+    prev_reserves = jnp.where(
+        lp_supply_change,
+        prev_reserves * lp_supply / prev_lp_supply,
+        prev_reserves,
+    )
 
     fees_are_being_charged = gamma != 1.0
 
@@ -385,7 +514,7 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
         tokens_to_drop,
         gamma,
         n,
-        0,
+        -1e-15,
     )
 
     optimal_arb_trade = jnp.where(
@@ -412,6 +541,81 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
 
     reserves = jnp.where(do_price_arb_trade, post_price_reserves, prev_reserves)
 
+    # --- Noise model dispatch ---
+    # Same pattern as reclamm_reserves.py: input_list[9+] are noise arrays,
+    # protocol_fee_split / seconds_per_step / noise_params are passed via Partial.
+    noise_fee_income = jnp.asarray(0.0, dtype=prices.dtype)
+    if noise_model == "ratio":
+        noise_trader_ratio = input_list[9]
+        if_noise = noise_trader_ratio > 0
+        applied_trade = reserves - prev_reserves
+        noisy = calculate_reserves_after_noise_trade(
+            applied_trade, reserves, prices, noise_trader_ratio, gamma,
+        )
+        reserves = jnp.where(if_noise, noisy, reserves)
+    elif noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
+        from quantammsim.pools.reCLAMM.reclamm_reserves import (
+            reclamm_tsoukalas_sqrt_noise_volume,
+            reclamm_tsoukalas_log_noise_volume,
+            reclamm_loglinear_noise_volume,
+        )
+        volatility = input_list[9]
+        arb_volume = 0.5 * jnp.sum(jnp.abs(reserves - prev_reserves) * prices)
+        effective_value = (reserves * prices).sum()
+        _np = noise_params if noise_params is not None else {}
+        if noise_model == "tsoukalas_sqrt":
+            noise_vol = reclamm_tsoukalas_sqrt_noise_volume(
+                effective_value, gamma, volatility, arb_volume, _np)
+        elif noise_model == "tsoukalas_log":
+            noise_vol = reclamm_tsoukalas_log_noise_volume(
+                effective_value, gamma, volatility, arb_volume, _np)
+        else:
+            noise_vol = reclamm_loglinear_noise_volume(
+                effective_value, gamma, volatility, arb_volume, _np)
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_total = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_income = noise_fee_total * (1.0 - protocol_fee_split)
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        reserves = reserves * scale
+    elif noise_model == "calibrated":
+        volatility = input_list[9]
+        dow_sin = input_list[10]
+        dow_cos = input_list[11]
+        arb_volume = 0.5 * jnp.sum(jnp.abs(reserves - prev_reserves) * prices)
+        effective_value = (reserves * prices).sum()
+        _np = noise_params if noise_params is not None else {}
+        noise_vol = reclamm_calibrated_noise_volume(
+            effective_value, gamma, volatility, arb_volume, dow_sin, dow_cos, _np)
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_total = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_income = noise_fee_total * (1.0 - protocol_fee_split)
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        reserves = reserves * scale
+    elif noise_model == "market_linear":
+        noise_base = input_list[9]
+        noise_tvl_coeff = input_list[10]
+        effective_value = (reserves * prices).sum()
+        _np = noise_params if noise_params is not None else {}
+        noise_vol = reclamm_market_linear_noise_volume(
+            effective_value, noise_base, noise_tvl_coeff,
+            tvl_mean=_np.get("tvl_mean", 0.0), tvl_std=_np.get("tvl_std", 1.0))
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_total = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_income = noise_fee_total * (1.0 - protocol_fee_split)
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        reserves = reserves * scale
+    elif noise_model == "mm_observed":
+        noise_base = input_list[9]
+        competitor_tvl = input_list[10]
+        effective_value = (reserves * prices).sum()
+        noise_vol = reclamm_mm_observed_noise_volume(
+            effective_value, noise_base, competitor_tvl)
+        minutes_per_step = seconds_per_step / 60.0
+        noise_fee_total = (1.0 - gamma) * noise_vol * minutes_per_step
+        noise_fee_income = noise_fee_total * (1.0 - protocol_fee_split)
+        scale = 1.0 + noise_fee_income / jnp.maximum(effective_value, 1e-8)
+        reserves = reserves * scale
+
     # apply trade if trade is present
     if do_trades:
         reserves += jitted_G3M_cond_trade(do_trades, reserves, weights, trade, gamma)
@@ -421,10 +625,11 @@ def _jax_calc_balancer_reserves_with_dynamic_fees_and_trades_scan_function_using
         prices,
         reserves,
         counter,
+        lp_supply,
     ], reserves
 
 
-@partial(jit, static_argnums=(8,9,))
+@partial(jit, static_argnums=(8, 9, 10))
 def _jax_calc_balancer_reserves_with_dynamic_inputs(
     initial_reserves,
     weights,
@@ -436,6 +641,18 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
     trades=None,
     do_trades=False,
     do_arb=True,
+    noise_model="ratio",
+    lp_supply_array=None,
+    protocol_fee_split=0.0,
+    noise_trader_ratio=0.0,
+    seconds_per_step=60.0,
+    noise_params=None,
+    volatility_array=None,
+    dow_sin_array=None,
+    dow_cos_array=None,
+    noise_base_array=None,
+    noise_tvl_coeff_array=None,
+    competitor_tvl_array=None,
 ):
     """
     Calculate AMM reserves considering fees and arbitrage opportunities using signature variations,
@@ -494,6 +711,16 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
     arb_fees = jnp.where(
         arb_fees.size == 1, jnp.full(prices.shape[0], arb_fees), arb_fees
     )
+    if do_trades and trades is None:
+        raise ValueError("Trades must be provided when do_trades=True.")
+
+    if lp_supply_array is None:
+        lp_supply_array = jnp.array(1.0)
+    lp_supply_array = jnp.where(
+        lp_supply_array.size == 1,
+        jnp.full(prices.shape[0], lp_supply_array),
+        lp_supply_array,
+    )
 
     # pre-calculate some values that are repeatedly used in optimal arb calculations
     _, active_trade_directions, tokens_to_drop, leave_one_out_idxs = (
@@ -521,26 +748,53 @@ def _jax_calc_balancer_reserves_with_dynamic_inputs(
         active_trade_directions=active_trade_directions,
         do_trades=do_trades,
         do_arb=do_arb,
+        noise_model=noise_model,
+        protocol_fee_split=protocol_fee_split,
+        seconds_per_step=seconds_per_step,
+        noise_params=noise_params,
     )
 
     carry_list_init = [
         initial_prices,
         initial_reserves,
         0,
+        lp_supply_array[0],
     ]
+
+    scan_inputs = [
+        prices,
+        active_initial_weights,
+        per_asset_ratios,
+        all_other_assets_ratios,
+        gamma,
+        arb_thresh,
+        arb_fees,
+        trades,
+        lp_supply_array,
+    ]
+
+    # Append noise-model-specific arrays at position 9+
+    # (same ordering as reclamm_reserves.py scan inputs)
+    if noise_model == "ratio":
+        ntr = jnp.broadcast_to(jnp.asarray(noise_trader_ratio), (prices.shape[0],))
+        scan_inputs.append(ntr)
+    elif noise_model in ("tsoukalas_sqrt", "tsoukalas_log", "loglinear"):
+        scan_inputs.append(volatility_array)
+    elif noise_model == "calibrated":
+        scan_inputs.append(volatility_array)
+        scan_inputs.append(dow_sin_array)
+        scan_inputs.append(dow_cos_array)
+    elif noise_model == "market_linear":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(noise_tvl_coeff_array)
+    elif noise_model == "mm_observed":
+        scan_inputs.append(noise_base_array)
+        scan_inputs.append(competitor_tvl_array)
+
     _, reserves = scan(
         scan_fn,
         carry_list_init,
-        [
-            prices,
-            active_initial_weights,
-            per_asset_ratios,
-            all_other_assets_ratios,
-            gamma,
-            arb_thresh,
-            arb_fees,
-            trades,
-        ],
+        scan_inputs,
     )
 
     return reserves

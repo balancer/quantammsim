@@ -44,6 +44,7 @@ else:
     config.update("jax_platform_name", "cpu")
 
 
+import jax
 import jax.numpy as jnp
 import jax.random
 from jax import jit, vmap, devices
@@ -53,9 +54,23 @@ from jax.lax import stop_gradient, dynamic_slice, associative_scan
 import numpy as np
 
 from functools import partial
+from quantammsim.core_simulator.dynamic_inputs import (
+    DynamicInputArrays,
+    default_dynamic_input_flags,
+    resolve_dynamic_input_flags,
+)
 
 np.seterr(all="raise")
 np.seterr(under="print")
+
+
+def _resolve_dynamic_inputs(dynamic_inputs, static_dict):
+    """Return the incoming bundle plus static dispatch flags."""
+    dynamic_input_flags = resolve_dynamic_input_flags(
+        dynamic_inputs,
+        static_dict.get("dynamic_input_flags"),
+    )
+    return dynamic_inputs, dynamic_input_flags
 
 
 def _apply_price_noise(prices, sigma, seed_int):
@@ -98,6 +113,7 @@ def _apply_price_noise(prices, sigma, seed_int):
 DAILY_COMPATIBLE_METRICS = frozenset({
     # Sharpe / VaR / ROVAR metrics naturally operate on day-boundary values.
     "daily_log_sharpe",
+    # "daily_log_sharpe_excess" excluded — needs HODL value series from prices
     "daily_sharpe",
     "daily_var_95%_trad",
     "daily_var_99%_trad",
@@ -274,6 +290,46 @@ def _daily_log_sharpe(values: jnp.ndarray) -> jnp.ndarray:
 
     # Annualize daily stats (calendar days)
     return jnp.sqrt(365.0) * (mean / (std + 1e-8))
+
+def _daily_log_sharpe_excess(
+    pool_values: jnp.ndarray,
+    hodl_values: jnp.ndarray,
+) -> jnp.ndarray:
+    r"""Annualized Sharpe ratio on daily log *excess* returns over HODL.
+
+    Isolates LP alpha by subtracting the HODL benchmark return at each
+    daily interval.  This removes crypto beta — a strategy that's just
+    long ETH no longer scores well in a bull-market window.
+
+    .. math::
+
+        e_t = \log(V^{\mathrm{pool}}_t / V^{\mathrm{pool}}_{t-1})
+              - \log(V^{\mathrm{hodl}}_t / V^{\mathrm{hodl}}_{t-1})
+
+        S_{\mathrm{excess}} = \sqrt{365} \cdot
+            \frac{\mu(e_t)}{\sigma(e_t) + \epsilon}
+
+    Parameters
+    ----------
+    pool_values : jnp.ndarray
+        Pool value time series at minute resolution, shape ``(T,)``.
+    hodl_values : jnp.ndarray
+        HODL value time series at minute resolution, shape ``(T,)``.
+
+    Returns
+    -------
+    jnp.ndarray
+        Scalar annualized excess-over-HODL log Sharpe.
+    """
+    daily_pool = pool_values[::1440]
+    daily_hodl = hodl_values[::1440]
+
+    log_ret_pool = jnp.diff(jnp.log(daily_pool + 1e-12))
+    log_ret_hodl = jnp.diff(jnp.log(daily_hodl + 1e-12))
+
+    excess = log_ret_pool - log_ret_hodl
+    return jnp.sqrt(365.0) * (excess.mean() / (excess.std() + 1e-8))
+
 
 def _calculate_max_drawdown(value_over_time, duration=7 * 24 * 60):
     """Calculate worst maximum drawdown across non-overlapping chunks.
@@ -729,6 +785,10 @@ def _calculate_return_value(
         "daily_sharpe": lambda: jnp.sqrt(365)
         * (daily_returns.mean() / daily_returns.std()),
         "daily_log_sharpe": lambda: _daily_log_sharpe(value_over_time),
+        "daily_log_sharpe_excess": lambda: _daily_log_sharpe_excess(
+            value_over_time,
+            jnp.sum(stop_gradient(initial_reserves) * local_prices[:value_over_time.shape[0]], axis=-1),
+        ),
         "returns": lambda: value_over_time[-1] / value_over_time[0] - 1.0,
         "annualised_returns": lambda: (
             (value_over_time[-1] / value_over_time[0])
@@ -839,15 +899,12 @@ def _calculate_return_value(
     return return_metrics[return_val]()
 
 
-@partial(jit, static_argnums=(7, 8))
+@partial(jit, static_argnums=(4, 5))
 def forward_pass(
     params,
     start_index,
     prices,
-    trades_array=None,
-    fees_array=None,
-    gas_cost_array=None,
-    arb_fees_array=None,
+    dynamic_inputs=None,
     pool=None,
     static_dict=None,
 ):
@@ -870,17 +927,8 @@ def forward_pass(
     prices : array-like
         A 2D array of market prices for the assets involved in the simulation.
 
-    trades_array : array-like, optional
-        An array of trades to be considered in the simulation. Defaults to None.
-
-    fees_array : array-like, optional
-        An array of fees to be applied during the simulation. Defaults to None.
-
-    gas_cost_array : array-like, optional
-        An array of gas costs to be considered in the simulation. Defaults to None.
-
-    arb_fees_array : array-like, optional
-        An array of arbitrage fees to be applied during the simulation. Defaults to None.
+    dynamic_inputs : DynamicInputArrays, optional
+        Fixed-structure bundle of dynamic trades/fees/gas/arb/LP arrays.
 
     pool : object
         An instance of a pool object that provides methods 
@@ -930,8 +978,8 @@ def forward_pass(
     - The function handles different cases for fees and trades, 
       adjusting the calculation method accordingly:
 
-      1. If any of `fees_array`, `gas_cost_array`, `arb_fees_array`, 
-         or `trades_array` is provided, it uses `pool.calculate_reserves_with_dynamic_inputs`.
+      1. If any dynamic-input flags are enabled, it uses
+         `pool.calculate_reserves_with_dynamic_inputs`.
 
       2. If any of `fees`, `gas_cost`, or `arb_fees` in `static_dict` is a nonzero scalar value, 
          it uses `pool.calculate_reserves_with_fees`.
@@ -972,6 +1020,7 @@ def forward_pass(
             "training_data_kind": "historic",
             "arb_frequency": 1,
             "do_trades": False,
+            "dynamic_input_flags": default_dynamic_input_flags(),
         }
 
     # 'pool' has default of None only to handle how partial function
@@ -1008,10 +1057,7 @@ def forward_pass(
         and static_dict["arb_frequency"] == 1
         and static_dict.get("turnover_penalty", 0.0) == 0.0
         and static_dict.get("price_noise_sigma", 0.0) == 0.0
-        and all(
-            ele is None
-            for ele in [fees_array, gas_cost_array, arb_fees_array, trades_array]
-        )
+        and dynamic_inputs is None
         and 1440 % static_dict["chunk_period"] == 0  # chunk_period divides metric_period
         and not pool._rule_outputs_are_weights  # only delta-based pools validated
         and static_dict["bout_length"] > 1440 * 2  # need ≥2 metric periods
@@ -1031,28 +1077,20 @@ def forward_pass(
     # 1. Any of Fees, gas costs, and arb fees are provided as arrays, or trades are provided
     # 2. Any of Fees, gas costs, and arb fees are nonzero scalar values, with no trades provided
     # 3. Fees, gas costs, and arb fees are all zero, with no trades provided
+    dynamic_inputs, dynamic_input_flags = _resolve_dynamic_inputs(
+        dynamic_inputs, static_dict
+    )
+
     fee_revenue = None
-    if any(
-        ele is not None
-        for ele in [fees_array, gas_cost_array, arb_fees_array, trades_array]
-    ):
-        # Case 1, at least one of fees, gas costs, or arb fees is not None
-        if fees_array is None:
-            fees_array = jnp.array([static_dict["fees"]])
-        if gas_cost_array is None:
-            gas_cost_array = jnp.array([static_dict["gas_cost"]])
-        if arb_fees_array is None:
-            arb_fees_array = jnp.array([static_dict["arb_fees"]])
+    if dynamic_input_flags["use_dynamic_inputs"]:
+        # Case 1, at least one dynamic input is enabled
         if hasattr(pool, "calculate_reserves_and_fee_revenue_with_dynamic_inputs"):
             reserves, fee_revenue = pool.calculate_reserves_and_fee_revenue_with_dynamic_inputs(
                 params,
                 static_dict,
                 prices,
                 start_index,
-                fees_array=fees_array,
-                arb_thresh_array=gas_cost_array,
-                arb_fees_array=arb_fees_array,
-                trade_array=trades_array,
+                dynamic_inputs=dynamic_inputs,
             )
         else:
             reserves = pool.calculate_reserves_with_dynamic_inputs(
@@ -1060,10 +1098,7 @@ def forward_pass(
                 static_dict,
                 prices,
                 start_index,
-                fees_array=fees_array,
-                arb_thresh_array=gas_cost_array,
-                arb_fees_array=arb_fees_array,
-                trade_array=trades_array,
+                dynamic_inputs=dynamic_inputs,
             )
     elif True in (
         ele > 0.0
@@ -1170,15 +1205,12 @@ def forward_pass(
     return base_metric
 
 
-@partial(jit, static_argnums=(7, 8))
+@partial(jit, static_argnums=(4, 5))
 def forward_pass_nograd(
     params,
     start_index,
     prices,
-    trades_array=None,
-    fees_array=None,
-    gas_cost_array=None,
-    arb_fees_array=None,
+    dynamic_inputs=None,
     pool=None,
     static_dict=None,
 ):
@@ -1203,17 +1235,8 @@ def forward_pass_nograd(
     prices : array-like
         A 2D array of market prices for the assets involved in the simulation.
 
-    trades_array : array-like, optional
-        An array of trades to be considered in the simulation. Defaults to None.
-
-    fees_array : array-like, optional
-        An array of fees to be applied during the simulation. Defaults to None.
-
-    gas_cost_array : array-like, optional
-        An array of gas costs to be considered in the simulation. Defaults to None.
-
-    arb_fees_array : array-like, optional
-        An array of arbitrage fees to be applied during the simulation. Defaults to None.
+    dynamic_inputs : DynamicInputArrays, optional
+        Fixed-structure bundle of dynamic trades/fees/gas/arb/LP arrays.
 
     pool : object
         An instance of a pool object that provides methods
@@ -1263,8 +1286,8 @@ def forward_pass_nograd(
     - The function handles different cases for fees and trades,
       adjusting the calculation method accordingly:
 
-      1. If any of `fees_array`, `gas_cost_array`, `arb_fees_array`,
-         or `trades_array` is provided, it uses `pool.calculate_reserves_with_dynamic_inputs`.
+      1. If any dynamic-input flags are enabled, it uses
+         `pool.calculate_reserves_with_dynamic_inputs`.
 
       2. If any of `fees`, `gas_cost`, or `arb_fees` in `static_dict` is a nonzero scalar value,
          it uses `pool.calculate_reserves_with_fees`.
@@ -1289,14 +1312,26 @@ def forward_pass_nograd(
     params = {k: stop_gradient(v) for k, v in params.items()}
     start_index = stop_gradient(start_index)
     prices = stop_gradient(prices)
+    if dynamic_inputs is not None:
+        dynamic_inputs = DynamicInputArrays(
+            trades=(
+                None
+                if dynamic_inputs.trades is None
+                else stop_gradient(dynamic_inputs.trades)
+            ),
+            fees=stop_gradient(dynamic_inputs.fees),
+            gas_cost=stop_gradient(dynamic_inputs.gas_cost),
+            arb_fees=stop_gradient(dynamic_inputs.arb_fees),
+            lp_supply=stop_gradient(dynamic_inputs.lp_supply),
+            reclamm_price_ratio_updates=stop_gradient(
+                dynamic_inputs.reclamm_price_ratio_updates
+            ),
+        )
     return forward_pass(
         params,
         start_index,
         prices,
-        trades_array,
-        fees_array,
-        gas_cost_array,
-        arb_fees_array,
+        dynamic_inputs,
         pool,
         static_dict,
     )
