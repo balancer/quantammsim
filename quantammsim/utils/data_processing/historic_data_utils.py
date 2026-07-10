@@ -33,6 +33,9 @@ from quantammsim.utils.data_processing.st0x_data_utils import (
 from quantammsim.utils.data_processing.aerodrome_data_utils import (
     fill_missing_rows_with_aerodrome_data,
 )
+from quantammsim.utils.data_processing.coingecko_data import (
+    get_coingecko_data,
+)
 from quantammsim.utils.data_processing.minute_daily_conversion_utils import (
     calculate_annualised_daily_volatility_from_minute_data,
     expand_daily_to_minute_data,
@@ -797,12 +800,17 @@ def get_coinbase_live_data(token, numeraire):
     return standardized_df
 
 
-def update_historic_data(token, root):
+def update_historic_data(token, root, source="auto", cg_id=None, cg_days="365"):
     """Update historic data for a given token, handling reruns gracefully.
 
     Args:
         token (str): Token symbol (e.g., 'BTC', 'ETH')
         root (str): Root directory path
+        source (str): "auto" (default) runs the exchange waterfall and falls back
+            to CoinGecko only if nothing is found; "coingecko" fetches straight
+            from CoinGecko; "binance" runs the waterfall with no CoinGecko fallback.
+        cg_id (str, optional): CoinGecko id override for CoinGecko fetches.
+        cg_days (str): CoinGecko history window in days (free tier caps at 365).
     """
     outputPath = root + "combined_data/"
     parquetPath = outputPath + token + "_USD.parquet"
@@ -818,6 +826,19 @@ def update_historic_data(token, root):
     quote_currency_candidates = get_quote_currency_candidates(token)
     primary_numeraire = quote_currency_candidates[0]
     concated_df = None
+
+    # Explicit CoinGecko source: skip the exchange waterfall entirely.
+    if source == "coingecko":
+        print(f"Fetching {token} directly from CoinGecko (source=coingecko)")
+        concated_df = get_coingecko_data(token, root, cg_id=cg_id, days=cg_days)
+        if concated_df is None or concated_df.empty:
+            raise FileNotFoundError(f"No CoinGecko data found for {token}")
+        filled_timestamps["CoinGecko"] = concated_df.index.tolist()
+        return _finalize_historic_data(
+            token, concated_df, filled_timestamps, root, outputPath,
+            parquetPath, minutePath, dailyPath, hourlyPath,
+        )
+
     filled_timestamps["Binance Vision"] = []
 
     # Try binance.vision data first, using a USD quote for assets like USDT.
@@ -994,10 +1015,33 @@ def update_historic_data(token, root):
         filled_timestamps["Aerodrome"] = filled_aerodrome_unix_values
         print("Filled aerodrome data")
         print(len(filled_aerodrome_unix_values))
+    # Fall back to CoinGecko when the exchange waterfall found nothing.
+    if concated_df.empty and source == "auto":
+        print(f"No exchange data for {token}; falling back to CoinGecko")
+        cg_df = get_coingecko_data(token, root, cg_id=cg_id, days=cg_days)
+        if cg_df is not None and not cg_df.empty:
+            concated_df = cg_df
+            filled_timestamps["CoinGecko"] = concated_df.index.tolist()
     if concated_df.empty:
         raise FileNotFoundError(
             f"No market data found for {token} using quote currencies {quote_currency_candidates}"
         )
+    return _finalize_historic_data(
+        token, concated_df, filled_timestamps, root, outputPath,
+        parquetPath, minutePath, dailyPath, hourlyPath,
+    )
+
+
+def _finalize_historic_data(
+    token, concated_df, filled_timestamps, root, outputPath,
+    parquetPath, minutePath, dailyPath, hourlyPath,
+):
+    """Sort/dedup, enforce the 1-minute grid, and write CSVs/plots/parquet.
+
+    Shared tail of :func:`update_historic_data` — reused by every source
+    (exchange waterfall and CoinGecko) so all tokens get identical outputs.
+    ``concated_df`` must be unix-indexed on entry.
+    """
     # Ensure data is properly sorted and has no duplicates
     concated_df = concated_df.sort_index()
     concated_df = concated_df[~concated_df.index.duplicated(keep="first")]
@@ -1034,6 +1078,7 @@ def update_historic_data(token, root):
         "Binance CDD": "orange",
         "Binance Vision": "cyan",
         "Candles": "magenta",
+        "CoinGecko": "black",
     }
     for source, timestamps in filled_timestamps.items():
         if timestamps:
