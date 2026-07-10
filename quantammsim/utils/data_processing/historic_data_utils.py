@@ -396,7 +396,7 @@ def update_historic_data_old(token, root):
         pd.date_range(
             start=pd.to_datetime(csvData.index.min(), unit="ms"),
             end=pd.to_datetime(csvData.index.max(), unit="ms"),
-            freq="T",
+            freq="min",
         ).astype(int)
         // 10**6
     )
@@ -554,7 +554,7 @@ def update_historic_data_old(token, root):
         pd.date_range(
             start=pd.to_datetime(hourly_data.index.min(), unit="ms"),
             end=pd.to_datetime(hourly_data.index.max(), unit="ms"),
-            freq="H",
+            freq="h",
         ).astype(int)
         // 10**6
     )
@@ -566,7 +566,7 @@ def update_historic_data_old(token, root):
         pd.date_range(
             start=pd.to_datetime(hourly_data.index.min(), unit="ms"),
             end=pd.to_datetime(hourly_data.index.max(), unit="ms"),
-            freq="T",
+            freq="min",
         ).astype(int)
         // 10**6
     )
@@ -987,7 +987,7 @@ def update_historic_data(token, root):
     agg_dict = {k: v for k, v in agg_dict.items() if k in concated_df_hourly.columns}
 
     # Perform resampling
-    hourly_data = concated_df_hourly.resample("1H").agg(agg_dict).reset_index()
+    hourly_data = concated_df_hourly.resample("1h").agg(agg_dict).reset_index()
 
     # Save hourly data
     hourly_data.to_csv(hourlyPath, index=False)

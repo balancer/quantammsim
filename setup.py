@@ -8,7 +8,7 @@ setup(
         "jax>=0.4.27",
         "jaxlib",  # Required for JAX to work
         "numpy>=1.21.0",
-        "pandas>=1.3.0",
+        "pandas>=2.2",
         "flask",
         "flask-jwt-extended",
         "scipy",

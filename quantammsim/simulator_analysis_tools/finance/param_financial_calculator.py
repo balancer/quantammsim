@@ -752,7 +752,7 @@ def fill_missing_values(target_directory, filename, output_filename):
 def calculate_daily_returns(minute_values, startDateString, name):
     # Create a pandas Series with minute-level values and a datetime index
     num_minutes = len(minute_values)
-    minute_index = pd.date_range(start=startDateString, periods=num_minutes, freq="T")
+    minute_index = pd.date_range(start=startDateString, periods=num_minutes, freq="min")
     minute_series = pd.Series(minute_values, index=minute_index)
     # Resample to daily frequency by taking the last value of each day
 
@@ -968,7 +968,7 @@ def retrieve_mc_param_financial_results(run_fingerprint, params, testEndDateStri
         minute_index = pd.date_range(
             start=run_fingerprint["startDateString"],
             periods=len(portfolio_result["value"]),
-            freq="T",
+            freq="min",
         )
         minute_series = pd.Series(portfolio_result["value"], index=minute_index)
         minute_series.to_csv("./results/portfolio_result_abs.csv")

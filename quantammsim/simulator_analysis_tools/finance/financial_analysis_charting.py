@@ -50,7 +50,7 @@ def plot_line_chart_from_results(
     series_dict = {}
     for result, series in zip(results_list, series_list):
         result_index = pd.date_range(
-            start=startDateString, periods=len(result), freq="T"
+            start=startDateString, periods=len(result), freq="min"
         )
         result_series = pd.Series(result, index=result_index)
         series_dict[series] = result_series

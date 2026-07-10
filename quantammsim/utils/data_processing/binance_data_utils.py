@@ -199,7 +199,7 @@ def report_gaps(concatenated_df, gaps_output_file=None):
         pd.date_range(
             start=pd.to_datetime(start_unix, unit="ms"),
             end=pd.to_datetime(end_unix, unit="ms"),
-            freq="T",
+            freq="min",
         ).astype(int)
         // 10**9
     )

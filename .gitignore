@@ -15,6 +15,10 @@ price-data-new
 # Ignore frontend build
 **/**/build
 
+# Ignore virtual environments
+venv/
+.venv/
+
 # Ignore files related to API keys
 .env
 
