@@ -20,7 +20,7 @@ def expand_daily_to_minute_data(daily_data, scale="ms"):
 
     # Create a date range with minute frequency
     minute_range = pd.date_range(
-        start=daily_data.index.min(), end=daily_data.index.max(), freq="T"
+        start=daily_data.index.min(), end=daily_data.index.max(), freq="min"
     )
 
     # Reindex the daily data to the minute range, forward filling the values

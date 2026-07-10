@@ -132,7 +132,7 @@ def raw_trades_to_trade_array(raw_trades, start_date_string, end_date_string, to
         pd.date_range(
             start=pd.to_datetime(start_date_string, format="%Y-%m-%d %H:%M:%S"),
             end=pd.to_datetime(end_date_string, format="%Y-%m-%d %H:%M:%S"),
-            freq="T",
+            freq="min",
         ).astype(int)
         // 10**6
     )

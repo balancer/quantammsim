@@ -393,7 +393,7 @@ def update_historic_data_old(token, root):
         pd.date_range(
             start=pd.to_datetime(csvData.index.min(), unit="ms"),
             end=pd.to_datetime(csvData.index.max(), unit="ms"),
-            freq="T",
+            freq="min",
         ).astype(int)
         // 10**6
     )
@@ -551,7 +551,7 @@ def update_historic_data_old(token, root):
         pd.date_range(
             start=pd.to_datetime(hourly_data.index.min(), unit="ms"),
             end=pd.to_datetime(hourly_data.index.max(), unit="ms"),
-            freq="H",
+            freq="h",
         ).astype(int)
         // 10**6
     )
@@ -563,7 +563,7 @@ def update_historic_data_old(token, root):
         pd.date_range(
             start=pd.to_datetime(hourly_data.index.min(), unit="ms"),
             end=pd.to_datetime(hourly_data.index.max(), unit="ms"),
-            freq="T",
+            freq="min",
         ).astype(int)
         // 10**6
     )

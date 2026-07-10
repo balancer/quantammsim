@@ -244,22 +244,22 @@ def calculate_drawdown_statistics(daily_returns, rf_values):
     weekly_max_drawdown = drawdown_weekly.min()
 
     # Monthly maximum drawdown
-    monthly_returns = daily_returns.resample("M").apply(lambda x: (1 + x).prod() - 1)
+    monthly_returns = daily_returns.resample("ME").apply(lambda x: (1 + x).prod() - 1)
     cumulative_monthly_returns = (1 + monthly_returns).cumprod()
     peak_monthly = cumulative_monthly_returns.cummax()
     drawdown_monthly = (cumulative_monthly_returns - peak_monthly) / peak_monthly
     monthly_max_drawdown = drawdown_monthly.min()
 
     daily_weekly_avg = calculate_average_daily_drawdown(daily_returns, "W")
-    daily_monthly_avg = calculate_average_daily_drawdown(daily_returns, "M")
+    daily_monthly_avg = calculate_average_daily_drawdown(daily_returns, "ME")
 
     daily_weekly_max = calculate_max_daily_drawdown(daily_returns, "W")
-    daily_monthly_max = calculate_max_daily_drawdown(daily_returns, "M")
+    daily_monthly_max = calculate_max_daily_drawdown(daily_returns, "ME")
 
     ulcer_index = calculate_ulcer_index(daily_returns)
 
     daily_weekly_ulcer = calcuate_period_ulcer_index(daily_returns, "W")
-    daily_monthly_ulcer = calcuate_period_ulcer_index(daily_returns, "M")
+    daily_monthly_ulcer = calcuate_period_ulcer_index(daily_returns, "ME")
 
     sterling = calculate_sterling_ratio(daily_returns, rf_values)
 
@@ -267,13 +267,13 @@ def calculate_drawdown_statistics(daily_returns, rf_values):
         daily_returns, rf_values, "W"
     )
     daily_monthly_sterling = calcuate_period_sterling_index(
-        daily_returns, rf_values, "M"
+        daily_returns, rf_values, "ME"
     )
 
     annualized_cDaR = calculate_cdar(daily_returns) * np.sqrt(365)
 
     weekly_cDaR = calculate_monthly_cdar(daily_returns, "W")
-    monthly_cDaR = calculate_monthly_cdar(daily_returns, "M")
+    monthly_cDaR = calculate_monthly_cdar(daily_returns, "ME")
 
     return {
         "Daily Returns Maximum Drawdown": abs(daily_max_drawdown),
@@ -500,7 +500,7 @@ def calcuate_period_sterling_index(daily_returns, rf_values, period):
     Parameters:
     daily_returns (np.array or pd.Series): Daily returns of the portfolio.
     rf_values (np.array or pd.Series): Daily risk-free rates.
-    period (str): Period for resampling (e.g., "M" for monthly).
+    period (str): Period for resampling (e.g., "ME" for monthly).
 
     Returns:
     np.array: Monthly Sterling Ratios.
