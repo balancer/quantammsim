@@ -20,12 +20,22 @@ and cached automatically under `results/mm_noise/_sim_arrays/`.
 parquet per pool token (`TOKEN_MAP` in `quantammsim/calibration/market_features.py`
 maps WBTC→BTC, WETH→ETH, USDT→USDC, …).
 
+`scripts/download_data.py` handles both sources — one command, any token:
+
 - **Binance-listed token**: `python scripts/download_data.py <TOKEN>`.
-- **Not on Binance**: copy `scripts/prepare_bold_usdc_data.py` (CoinGecko):
-  daily close+volume → minute grid by forward-fill, daily volume spread /1440
-  (so the daily resample recovers real volume), stables as flat $1.00 peg.
-  CoinGecko free tier = **last 365 days only** — this bounds the earliest
-  simulation start and usually forces a per-pair train window (Step 4).
+- **Not on Binance**: same script auto-falls back to CoinGecko. If the token is
+  in the built-in registry (`COINGECKO_IDS` in
+  `quantammsim/utils/data_processing/coingecko_data.py`) just run
+  `python scripts/download_data.py <TOKEN>`; otherwise pass the id explicitly.
+  For a stable-paired volatile token, add `--peg <STABLE>` to write/extend the
+  stablecoin's flat-$1 parquet over the same window. BOLD/USDC example:
+  `python scripts/download_data.py BOLD --cg-id liquity-bold-2 --peg USDC`.
+  (`--source coingecko` forces CoinGecko even for a Binance-listed token.)
+
+  CoinGecko builds the minute grid by forward-fill with daily volume spread /1440
+  (so the daily resample recovers real volume). Free tier = **last 365 days
+  only** — this bounds the earliest simulation start and usually forces a
+  per-pair train window (Step 4).
 
 Check coverage: the parquet must span train start → test end.
 

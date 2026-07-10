@@ -19,95 +19,14 @@ OUTPUT_PATH = os.path.join(
     "local_data", "noise_calibration", "token_mcaps.json",
 )
 
-# Token symbol -> CoinGecko ID mapping
-# Covers all tokens appearing in our 26 matched pools + common Balancer tokens
-COINGECKO_IDS = {
-    # Blue-chip / wrapped natives
-    "WETH": "ethereum",
-    "ETH": "ethereum",
-    "WBTC": "wrapped-bitcoin",
-    "BTC": "bitcoin",
-    "cbBTC": "bitcoin",   # Coinbase wrapped BTC — use BTC mcap
-    "USDC": "usd-coin",
-    "USDT": "tether",
-    "DAI": "dai",
-    "wstETH": "wrapped-steth",
-    "stETH": "staked-ether",
-    "rETH": "rocket-pool-eth",
-    "cbETH": "coinbase-wrapped-staked-eth",
-    "WMATIC": "polygon-ecosystem-token",
-    "MATIC": "polygon-ecosystem-token",
-    "POL": "polygon-ecosystem-token",
-    "WAVAX": "avalanche-2",
-    "AVAX": "avalanche-2",
-    "GNO": "gnosis",
-    "WXDAI": "dai",       # Wrapped xDAI ≈ DAI
-    "xDAI": "dai",
-    "S": "sonic-3",
-    "wS": "sonic-3",
-    # Mid-cap DeFi
-    "AAVE": "aave",
-    "LINK": "chainlink",
-    "UNI": "uniswap",
-    "BAL": "balancer",
-    "MKR": "maker",
-    "CRV": "curve-dao-token",
-    "COMP": "compound-governance-token",
-    "SNX": "havven",
-    "LDO": "lido-dao",
-    "RPL": "rocket-pool",
-    "SUSHI": "sushi",
-    "YFI": "yearn-finance",
-    "1INCH": "1inch",
-    "ENS": "ethereum-name-service",
-    "ARB": "arbitrum",
-    "OP": "optimism",
-    "PENDLE": "pendle",
-    "ENA": "ethena",
-    "EIGEN": "eigenlayer",
-    "COW": "cow-protocol",
-    "SAFE": "safe",
-    # Smaller / specific tokens in our pools
-    "ACX": "across-protocol",
-    "ALCX": "alchemix",
-    "QI": "benqi",
-    "QNT": "quant-network",
-    "RDNT": "radiant-capital",
-    # TREE not on CoinGecko — handled as fallback below
-    "XAI": "xai-blockchain",
-    # Wrapped aTokens — use underlying
-    "waEthLidoWETH": "ethereum",
-    "waEthLidowstETH": "wrapped-steth",
-    "waBasWETH": "ethereum",
-    "waBasUSDC": "usd-coin",
-    "waEthUSDC": "usd-coin",
-    "waGnoGNO": "gnosis",
-    "waGnowstETH": "wrapped-steth",
-    # Additional tokens from expanded pool set
-    "wPOL": "polygon-ecosystem-token",
-    "stS": "sonic-3",        # Staked Sonic — use S mcap
-    "JitoSOL": "jito-governance-token",
-    "scUSD": "usd-coin",     # Rings scUSD stablecoin — use USDC mcap as proxy
-    "DOLA": "dola-usd",
-}
-
-# Asset type classification
-STABLECOINS = {
-    "USDC", "USDT", "DAI", "WXDAI", "xDAI", "GHO", "LUSD", "crvUSD",
-    "FRAX", "sDAI", "scUSD", "DOLA",
-    "waBasUSDC", "waEthUSDC",
-}
-NATIVE_LST = {
-    "WETH", "ETH", "wstETH", "stETH", "rETH", "cbETH",
-    "WBTC", "BTC", "cbBTC",
-    "WMATIC", "MATIC", "POL", "wPOL",
-    "WAVAX", "AVAX",
-    "GNO", "S", "wS", "stS",
-    "JitoSOL",
-    "waEthLidoWETH", "waEthLidowstETH",
-    "waBasWETH", "waGnoGNO", "waGnowstETH",
-}
-# Everything else is VOLATILE (asset_type=2)
+# Token symbol -> CoinGecko ID mapping and asset-type classification live in the
+# shared data-processing module so the download pipeline and this script stay in
+# sync. Everything not in STABLECOINS/NATIVE_LST is VOLATILE (asset_type=2).
+from quantammsim.utils.data_processing.coingecko_data import (  # noqa: E402
+    COINGECKO_IDS,
+    STABLECOINS,
+    NATIVE_LST,
+)
 
 
 def fetch_mcaps():
