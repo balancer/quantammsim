@@ -95,21 +95,9 @@ PAIR_CONFIGS = {
     "treehype": {
         # TREE / HYPE. The live pool is TREE/tHYPE, but a rate provider
         # internalises tHYPE's rate, so we simulate against the underlying
-        # HYPE (== wHYPE) price. Absent from the MM artifact → median-fallback
-        # noise, re-anchored to a target daily captured volume with a
-        # saturating competitor K (so fee income doesn't compound explosively).
-        #
-        # Volume sensitivity (the dominant driver; TVL is ~scale-invariant):
-        # the existing ETH weighted pool does ~$68k/30d ≈ $2k/day, and the two
-        # legs diverged ~26x over the window, so vs-HODL returns are structurally
-        # hard. Optimal price_ratio and OOS RoH vs assumed daily volume:
-        #   $1k/day  -> PR~28  test RoH -36%   (fees ~$0.7k)  [realistic today]
-        #   $5k/day  -> PR~9   test RoH ~-25%
-        #   $20k/day -> PR~4   test RoH  -6%   (fees ~$30k)   [near break-even]
-        #   $50k/day -> PR~2.3 test RoH +53%   (fees ~$84k)   [needs ~25x today]
-        # Tighter-than-optimal bands overfit train and do worse OOS. Set
-        # daily_volume to the volume you actually expect this pool to capture.
-        # TREE (CoinGecko) starts 2025-07-29, hence the shortened windows.
+        # HYPE (== wHYPE) price. Not in the MM artifact → median-pool fallback
+        # noise. On HyperEVM (gas ~cents). TREE (CoinGecko) price data starts
+        # 2025-07-29, hence the shortened windows.
         "tokens": ["HYPE", "TREE"],   # alphabetical — runner price/reserve order
         "pool_id": "treehype",
         "gas_cost": 0.1,   # HyperEVM gas is ~cents, not the $1 Ethereum default
@@ -119,13 +107,6 @@ PAIR_CONFIGS = {
         },
         "train": ("2025-08-15 00:00:00", "2026-01-15 00:00:00"),
         "test":  ("2026-01-15 00:00:00", "2026-07-01 00:00:00"),
-        # ~$2k/day captured volume on a $20k pool → turnover ~0.10 (a smaller
-        # pool sees the same $ volume, so fees are a bigger fraction of TVL).
-        "reanchor": {
-            "daily_volume": 2_000,
-            "ref_tvl": 20_000,
-            "competitor_k": 20_000,
-        },
     },
 }
 
