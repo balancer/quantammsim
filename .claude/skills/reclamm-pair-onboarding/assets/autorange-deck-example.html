@@ -1,0 +1,1763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title id="page-title">INV/DOLA AutoRange</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <style>
+    /* ─── TOKENS ───────────────────────────────────────────── */
+    :root {
+      --bg:        #1C2026;
+      --surface:   #252B35;
+      --surface2:  #2D3440;
+      --border:    #3A4251;
+      /* --brand is set dynamically by JS from CONFIG.brandColor */
+      --brand:     #3B82F6;
+      --brand-dim: #1E4080;
+      --green:     #00D395;
+      --amber:     #F6AD55;
+      --text:      #F0EAE0;
+      --text2:     #9AA3B0;
+      --text3:     #5C6678;
+    }
+
+    /* ─── RESET ────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #0D1117;
+      font-family: 'Inter', sans-serif;
+      color: var(--text);
+      overflow: hidden;
+    }
+
+    /* ─── DECK ─────────────────────────────────────────────── */
+    #deck {
+      position: absolute;
+      width: 1280px; height: 720px;
+      transform-origin: 0 0;
+      background: var(--bg);
+      left: 0; top: 0;
+    }
+
+    /* ─── SLIDES ───────────────────────────────────────────── */
+    .slide {
+      position: absolute; inset: 0;
+      display: none; flex-direction: column;
+      overflow: hidden;
+    }
+    .slide.active { display: flex; }
+
+    /* ─── SHARED CHROME ────────────────────────────────────── */
+    .slide-header {
+      display: flex; align-items: center;
+      padding: 28px 48px 0;
+    }
+    .balancer-logo { display: flex; align-items: center; gap: 10px; }
+    .balancer-logo svg { width: 28px; height: 28px; }
+    .balancer-logo-text {
+      font-size: 13px; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--text2);
+    }
+    .slide-badge {
+      margin-left: auto;
+      font-size: 11px; font-weight: 600;
+      letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--brand); background: rgba(var(--brand-rgb), 0.12);
+      padding: 4px 12px; border-radius: 20px;
+      border: 1px solid rgba(var(--brand-rgb), 0.3);
+    }
+    .slide-footer {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 48px 24px; margin-top: auto;
+    }
+    .slide-footer-label { font-size: 11px; font-weight: 500; color: var(--text3); letter-spacing: 0.06em; }
+    .slide-dots { display: flex; gap: 6px; align-items: center; }
+    .slide-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--border); transition: background 0.2s, width 0.2s;
+      cursor: pointer;
+    }
+    .slide-dot.active { background: var(--brand); width: 18px; border-radius: 3px; }
+
+    /* ─── DECORATIVE ───────────────────────────────────────── */
+    .grid-bg {
+      position: absolute; inset: 0; pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+      background-size: 64px 64px;
+    }
+    .glow-brand {
+      position: absolute; pointer-events: none;
+      border-radius: 50%; filter: blur(80px); opacity: 0.15;
+      background: var(--brand);
+    }
+    .glow-green {
+      position: absolute; pointer-events: none;
+      border-radius: 50%; filter: blur(80px); opacity: 0.12;
+      background: var(--green);
+    }
+
+    /* ─────────────────────────────────────────────────────────
+       SLIDE 1 - COVER
+    ───────────────────────────────────────────────────────── */
+    #slide-cover { justify-content: space-between; }
+    #slide-cover .glow-brand { width: 500px; height: 500px; top: -150px; right: -100px; }
+    #slide-cover .glow-green { width: 300px; height: 300px; bottom: 50px; left: 200px; }
+
+    .cover-body {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center; gap: 28px; position: relative;
+    }
+    .cover-token-row { display: flex; align-items: center; gap: 20px; }
+
+    .token-logo-wrap {
+      width: 80px; height: 80px; border-radius: 50%;
+      overflow: hidden; flex-shrink: 0;
+      border: 2px solid rgba(255,255,255,0.12);
+      box-shadow: 0 0 36px rgba(0,0,0,0.4);
+    }
+    .token-logo-wrap img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    .token-logo-placeholder {
+      width: 80px; height: 80px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--brand-dim), var(--brand));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px; font-weight: 800; color: #fff;
+      box-shadow: 0 0 40px rgba(0,0,0,0.4);
+      border: 2px solid rgba(255,255,255,0.12);
+      flex-shrink: 0;
+    }
+
+    .cover-x { font-size: 32px; color: var(--text3); font-weight: 300; }
+
+    .cover-title {
+      font-size: 60px; font-weight: 800; line-height: 1.05;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #fff 30%, var(--brand) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .cover-subtitle {
+      font-size: 20px; font-weight: 400; color: var(--text2); letter-spacing: 0.01em;
+    }
+    .cover-pill {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: rgba(0,211,149,0.1); border: 1px solid rgba(0,211,149,0.3);
+      padding: 8px 20px; border-radius: 24px;
+      font-size: 13px; font-weight: 600; color: var(--green); letter-spacing: 0.04em;
+    }
+    .cover-pill-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green); animation: pulse 2s infinite;
+      flex-shrink: 0;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+    .cover-footer-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 20px 48px;
+    }
+    .cover-footer-left, .cover-footer-right { font-size: 12px; color: var(--text3); }
+
+    /* ─────────────────────────────────────────────────────────
+       SLIDE 2 - WHAT IS AUTORANGE
+    ───────────────────────────────────────────────────────── */
+    #slide-what .glow-brand { width: 400px; height: 400px; bottom: -100px; right: -50px; }
+
+    .slide-content-split { display: flex; flex: 1; overflow: hidden; }
+    .split-left {
+      flex: 0 0 510px; padding: 28px 48px 0;
+      display: flex; flex-direction: column; gap: 20px;
+    }
+    .split-right {
+      flex: 1; padding: 20px 40px 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+    }
+
+    .slide-eyebrow {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--brand);
+    }
+    .slide-title {
+      font-size: 38px; font-weight: 800; line-height: 1.1;
+      letter-spacing: -0.02em; color: var(--text);
+    }
+    .slide-title em { font-style: normal; color: var(--green); }
+    .slide-lead {
+      font-size: 14.5px; line-height: 1.65; color: var(--text2);
+      border-left: 3px solid var(--brand); padding-left: 16px;
+    }
+
+    .benefit-list { display: flex; flex-direction: column; gap: 16px; }
+    .benefit-item { display: flex; align-items: flex-start; gap: 14px; }
+    .benefit-marker {
+      flex-shrink: 0; margin-top: 3px;
+      width: 4px; height: 36px; border-radius: 2px;
+    }
+    .benefit-marker.g { background: var(--green); }
+    .benefit-marker.b { background: var(--brand); }
+    .benefit-marker.a { background: var(--amber); }
+    .benefit-text strong { font-size: 13.5px; font-weight: 700; color: var(--text); }
+    .benefit-text p { font-size: 12.5px; color: var(--text2); line-height: 1.6; margin-top: 4px; }
+
+    #range-canvas {
+      width: 100%; max-width: 560px; height: 340px;
+      border-radius: 12px; background: var(--surface); border: 1px solid var(--border);
+    }
+    .canvas-legend { display: flex; gap: 20px; margin-top: 12px; }
+    .legend-item {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; color: var(--text2); font-weight: 500;
+    }
+    .legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+
+    /* ─────────────────────────────────────────────────────────
+       SLIDE 4 - SIMULATION RESULTS
+    ───────────────────────────────────────────────────────── */
+    #slide-results .glow-green { width: 300px; height: 300px; bottom: -80px; left: 200px; }
+
+    .results-body {
+      flex: 1; display: flex; flex-direction: column;
+      padding: 12px 48px 12px; gap: 14px; overflow: hidden;
+    }
+    .results-counters { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+    .counter-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 18px 20px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .counter-label { font-size: 11px; font-weight: 600; color: var(--text3); letter-spacing: 0.06em; text-transform: uppercase; }
+    .counter-value { font-size: 30px; font-weight: 800; color: var(--text); letter-spacing: -0.02em; }
+    .counter-value.placeholder { color: var(--border); font-size: 24px; }
+    .counter-change { font-size: 11px; color: var(--text3); }
+
+    .results-charts { display: flex; gap: 14px; flex: 1; min-height: 0; }
+    .chart-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 16px;
+      display: flex; flex-direction: column; gap: 10px; min-height: 0;
+    }
+    .chart-card-title { font-size: 12px; font-weight: 600; color: var(--text2); }
+    .chart-placeholder {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      border-radius: 8px; background: var(--surface2);
+      color: var(--text3); font-size: 12px; flex-direction: column; gap: 6px; min-height: 0;
+    }
+    .chart-placeholder .ph-icon { font-size: 26px; opacity: 0.35; }
+    .chart-canvas-wrap { flex: 1; position: relative; min-height: 0; }
+    .chart-canvas-wrap canvas { width: 100% !important; height: 100% !important; }
+
+    /* ─── SLIDE 6: SWEEP 3D ──────────────────────────────────── */
+    .sweep-body { display: flex; flex: 1; overflow: hidden; }
+    .sweep-left {
+      flex: 0 0 400px; padding: 20px 28px 0 48px;
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    .sweep-right {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 12px 40px 12px 12px; gap: 10px; overflow: visible;
+    }
+    .sweep-desc { font-size: 13px; color: var(--text2); line-height: 1.7; }
+    .sweep-stats { display: flex; gap: 28px; }
+    .sweep-stat { display: flex; flex-direction: column; gap: 2px; }
+    .sweep-stat-n { font-size: 30px; font-weight: 800; color: var(--text); line-height: 1; }
+    .sweep-stat-l { font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.07em; }
+    /* 3D scene */
+    .hm-scene {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      overflow: visible;
+    }
+    .hm-inner {
+      position: relative;
+      width: 440px; height: 290px;
+      flex-shrink: 0;
+    }
+    .hm-board {
+      position: absolute;
+      width: 360px; height: 240px;
+      background: rgba(8, 12, 22, 0.97);
+      border: 1px solid rgba(255,255,255,0.09);
+      border-radius: 8px; padding: 8px 10px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+      transform: perspective(800px) rotateX(18deg) rotateY(-22deg);
+      transform-origin: center center;
+    }
+    .hm-board-label {
+      font-size: 7.5px; font-weight: 600; letter-spacing: 0.09em;
+      text-transform: uppercase; color: rgba(255,255,255,0.3); margin-bottom: 5px;
+    }
+    .hm-board-label-front { color: rgba(255,255,255,0.55); }
+    .hm-cols { display: flex; margin-left: 24px; gap: 2px; margin-bottom: 2px; }
+    .hm-col-lbl { flex: 1; font-size: 6px; color: rgba(255,255,255,0.28); text-align: center; }
+    .hm-grid { display: flex; flex-direction: column; gap: 2px; }
+    .hm-row { display: flex; gap: 2px; }
+    .hm-row-lbl { width: 22px; font-size: 6px; color: rgba(255,255,255,0.3); display: flex; align-items: center; }
+    .hm-cell { flex: 1; border-radius: 2px; height: 20px; }
+
+    /* ─── NAVIGATION ───────────────────────────────────────── */
+    #nav-prev, #nav-next {
+      position: fixed; top: 50%; transform: translateY(-50%);
+      width: 40px; height: 40px; border-radius: 50%;
+      background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+      color: var(--text2); font-size: 18px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.2s, color 0.2s; z-index: 100;
+      user-select: none;
+    }
+    #nav-prev:hover, #nav-next:hover { background: rgba(255,255,255,0.12); color: var(--text); }
+
+    /* ─── PDF EXPORT BUTTON ────────────────────────────────── */
+    #pdf-btn {
+      position: fixed; bottom: 20px; right: 20px; z-index: 200;
+      display: flex; align-items: center; gap: 7px;
+      background: rgba(30,34,42,0.92); border: 1px solid var(--border);
+      color: var(--text2); font-size: 12px; font-weight: 500;
+      font-family: 'Inter', sans-serif;
+      padding: 8px 14px; border-radius: 8px; cursor: pointer;
+      transition: border-color 0.2s, color 0.2s;
+      backdrop-filter: blur(8px);
+    }
+    #pdf-btn:hover { border-color: var(--brand); color: var(--text); }
+    #pdf-btn svg { width: 13px; height: 13px; fill: currentColor; }
+
+    #deck-wrap {
+      width: 100vw; height: 100vh;
+      position: relative; overflow: hidden;
+    }
+
+    @page { size: 1280px 720px landscape; margin: 0; }
+
+    @media print {
+      * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+      html, body { overflow: visible; width: 1280px; height: auto; background: var(--bg); }
+      #deck-wrap { width: 1280px; height: auto; position: static; overflow: visible; }
+      #deck { position: relative !important; transform: none !important; left: 0 !important; top: 0 !important; width: 1280px; height: auto; }
+      #nav-prev, #nav-next, #pdf-btn { display: none !important; }
+      .slide {
+        position: relative !important; inset: auto !important;
+        display: flex !important;
+        width: 1280px; height: 720px;
+        page-break-after: always; break-after: page;
+        overflow: hidden;
+      }
+      .grid-bg { display: none; }
+    }
+
+    /* ─────────────────────────────────────────────────────────
+       RESULTS TABLE
+    ───────────────────────────────────────────────────────── */
+    .results-table {
+      display: flex; flex-direction: column; gap: 4px;
+      overflow: hidden; flex: 1;
+    }
+    .rt-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 8px; border-radius: 6px;
+      font-size: 12px;
+    }
+    .rt-row.rt-highlight { background: rgba(0,211,149,0.08); border: 1px solid rgba(0,211,149,0.2); }
+    .rt-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .rt-label { flex: 1; color: var(--text2); }
+    .rt-label strong { color: var(--text); }
+    .rt-val { font-weight: 600; font-size: 13px; width: 52px; text-align: right; }
+
+    /* ─── SENSITIVITY TABLE ─────────────────────────────────── */
+    .sens-table { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+    .sens-row, .sens-head {
+      display: grid; grid-template-columns: 2.1fr 1fr 0.9fr 1fr 1fr;
+      align-items: center; gap: 8px; padding: 9px 14px; border-radius: 8px;
+      font-size: 13px;
+    }
+    .sens-head {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--text3); padding-bottom: 2px;
+    }
+    .sens-row { background: var(--surface); border: 1px solid var(--border); color: var(--text2); }
+    .sens-row .sens-lbl { color: var(--text); font-weight: 600; }
+    .sens-c { text-align: center; }
+    .sens-c.sens-lbl { text-align: left; }
+    .sens-note {
+      font-size: 12px; color: var(--text2); line-height: 1.6; margin-top: 14px;
+      border-left: 3px solid var(--brand); padding-left: 14px;
+    }
+
+    /* ─── SLIDE 3: PIPELINE ─────────────────────────────────── */
+    .sim-body { display: flex; flex: 1; overflow: hidden; }
+    .sim-left {
+      flex: 0 0 460px; padding: 28px 32px 0 48px;
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    .sim-right {
+      flex: 1; padding: 20px 48px 0 48px;
+      display: flex; flex-direction: column; gap: 0;
+    }
+    .offering-card {
+      display: flex; gap: 14px; align-items: flex-start;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 16px;
+    }
+    .offering-card-num {
+      width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+      background: rgba(var(--brand-rgb), 0.15); color: var(--brand);
+      font-size: 11px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .offering-card-content { display: flex; flex-direction: column; gap: 3px; }
+    .offering-card-content strong { font-size: 13px; font-weight: 600; color: var(--text); }
+    .offering-card-content p { font-size: 12px; color: var(--text2); line-height: 1.5; margin: 0; }
+    .pipeline-title {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--text3); margin-bottom: 6px;
+    }
+    .pipeline-step { display: flex; gap: 12px; align-items: flex-start; }
+    .pipeline-step-num {
+      width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--brand); font-size: 10px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center; margin-top: 1px;
+    }
+    .pipeline-step-text { font-size: 12px; color: var(--text2); line-height: 1.5; padding-bottom: 2px; }
+    .pipeline-step-title { font-size: 13px; font-weight: 600; color: var(--text); display: block; margin-bottom: 1px; }
+    .pipeline-connector { width: 1px; height: 16px; background: var(--border); margin-left: 10px; }
+    .sim-note {
+      display: flex; gap: 8px; align-items: flex-start;
+      font-size: 11px; color: var(--text3); line-height: 1.5;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 12px; margin-top: 8px;
+    }
+    .sim-note-icon { font-size: 14px; margin-top: 1px; flex-shrink: 0; }
+    .sim-note strong { color: var(--amber); }
+    .github-link {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 12px; font-weight: 500; color: var(--text2);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 6px 12px; text-decoration: none; transition: border-color 0.2s, color 0.2s;
+    }
+    .github-link:hover { border-color: var(--brand); color: var(--text); }
+    .github-link svg { width: 15px; height: 15px; fill: currentColor; flex-shrink: 0; }
+    .quant-credit { font-size: 11px; color: var(--text3); line-height: 1.4; }
+
+    /* ─── SLIDE 3: POOL PARAMETERS ──────────────────────────── */
+    .params-body {
+      flex: 1; display: flex; flex-direction: column;
+      padding: 8px 80px 0; gap: 0; justify-content: center;
+    }
+    .param-row {
+      display: flex; gap: 48px; align-items: flex-start;
+      padding: 28px 0; border-bottom: 1px solid var(--border);
+    }
+    .param-row:first-child { border-top: 1px solid var(--border); }
+    .param-q {
+      flex: 0 0 320px;
+      font-size: 22px; font-weight: 800; color: var(--text); line-height: 1.25;
+    }
+    .param-a {
+      flex: 1; font-size: 14px; color: var(--text2); line-height: 1.7;
+      padding-top: 3px;
+    }
+    .param-a strong { color: var(--text); font-weight: 600; }
+
+    /* ─── SLIDE 4: TWO APPROACHES ─────────────────────────── */
+    .method-split {
+      display: flex; flex: 1; gap: 0; padding: 28px 48px 16px; overflow: hidden;
+    }
+    .method-col {
+      flex: 1; display: flex; flex-direction: column; gap: 32px;
+      padding-right: 52px;
+    }
+    .method-col + .method-col { padding-right: 0; padding-left: 52px; border-left: 1px solid var(--border); }
+    .method-col-tag {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--text3);
+    }
+    .method-col-tag-active { color: var(--brand); }
+    .method-col-title { font-size: 28px; font-weight: 800; line-height: 1.15; color: var(--text); }
+    .method-col-body { font-size: 14px; color: var(--text2); line-height: 1.75; flex: 1; }
+    .method-list {
+      display: flex; flex-direction: column; gap: 12px; flex: 1; list-style: none;
+    }
+    .method-list li {
+      display: flex; gap: 12px; align-items: flex-start;
+      font-size: 14px; color: var(--text2); line-height: 1.45;
+    }
+    .method-list li::before {
+      content: '-'; color: var(--brand); font-weight: 700;
+      flex-shrink: 0; margin-top: 0;
+    }
+    .method-col-note {
+      display: flex; gap: 10px; align-items: flex-start;
+      font-size: 12px; color: var(--text3); line-height: 1.5;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 14px;
+    }
+    .method-col-note-icon { font-size: 13px; flex-shrink: 0; margin-top: 1px; }
+    .method-col-active .method-col-note { color: var(--text2); border-color: rgba(var(--brand-rgb), 0.25); }
+
+    /* ─── SLIDE 6: SECURITY ─────────────────────────────── */
+    .security-body {
+      flex: 1; display: flex;
+      padding: 14px 48px 0; gap: 18px; overflow: hidden;
+    }
+    .security-col { flex: 1; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+    .security-col-wide { flex: 1.25; }
+    .security-col-title {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--text3);
+      padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    }
+    .security-item {
+      display: flex; gap: 12px; align-items: center; flex-shrink: 0;
+      padding: 8px 0;
+    }
+    .security-logo {
+      width: 32px; height: 32px; border-radius: 7px;
+      overflow: hidden; flex-shrink: 0; background: var(--surface2);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .security-logo img { width: 28px; height: 28px; object-fit: contain; display: block; }
+.security-item-name { font-size: 14px; font-weight: 600; color: var(--text); }
+    .security-tag {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 10px; font-weight: 600; letter-spacing: 0.05em;
+      text-transform: uppercase; color: var(--green);
+      background: rgba(0,211,149,0.08); border: 1px solid rgba(0,211,149,0.2);
+      padding: 3px 8px; border-radius: 10px; margin-top: 6px;
+    }
+    .security-tag-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+    .security-monitoring-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px; flex: 1; display: flex; flex-direction: column; gap: 10px;
+    }
+    .security-monitoring-stat { display: flex; flex-direction: column; gap: 2px; }
+    .security-monitoring-stat strong { font-size: 12.5px; font-weight: 600; color: var(--text); }
+    .security-monitoring-stat span { font-size: 11.5px; color: var(--text2); line-height: 1.4; }
+
+    /* ─── SLIDE 7: PROPOSAL ──────────────────────────────── */
+    .proposal-body {
+      flex: 1; display: flex; flex-direction: column;
+      padding: 0 80px; justify-content: center; gap: 32px;
+    }
+    .proposal-hero { display: flex; flex-direction: column; gap: 10px; }
+    .proposal-config { font-size: 44px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.05; }
+    .proposal-config span { color: var(--green); }
+    .proposal-sub { font-size: 15px; color: var(--text2); }
+    .proposal-two-col { display: flex; gap: 80px; align-items: flex-start; }
+    .proposal-col-label {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--text3); margin-bottom: 20px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .param-badge {
+      font-size: 9px; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--amber);
+      background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.25);
+      padding: 2px 8px; border-radius: 10px;
+    }
+    .proposal-params-col { min-width: 320px; }
+    .proposal-param-row {
+      display: flex; align-items: baseline; gap: 10px;
+      padding: 10px 0; border-bottom: 1px solid var(--border);
+    }
+    .proposal-param-name { font-size: 14px; color: var(--text2); white-space: nowrap; }
+    .proposal-param-sep { flex: 1; border-bottom: 1px dotted var(--border); margin-bottom: 5px; min-width: 24px; }
+    .proposal-param-val { font-size: 22px; font-weight: 700; color: var(--green); white-space: nowrap; }
+    .proposal-param-val-dim { color: var(--text3); font-size: 16px; font-weight: 400; }
+    .proposal-steps-col { flex: 1; }
+    .proposal-step-row {
+      display: flex; align-items: center; gap: 16px;
+      padding: 12px 0; border-bottom: 1px solid var(--border);
+    }
+    .proposal-step-n { font-size: 11px; font-weight: 700; color: var(--brand); width: 16px; text-align: right; flex-shrink: 0; }
+    .proposal-step-text { font-size: 15px; color: var(--text); }
+
+    /* ─── SWEEP SLIDE EXTRAS ─────────────────────────────── */
+  </style>
+</head>
+<body>
+
+<div id="deck-wrap">
+  <button id="nav-prev">&#8592;</button>
+  <div id="deck">
+
+
+    <!-- ══════════════════════════════════════════════════════
+         SLIDE 1 - COVER
+    ══════════════════════════════════════════════════════ -->
+    <section class="slide active" id="slide-cover">
+      <div class="grid-bg"></div>
+      <div class="glow-brand"></div>
+      <div class="glow-green"></div>
+
+      <header class="slide-header">
+        <div class="balancer-logo">
+          <svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="2" y="2" width="508" height="508" rx="254" fill="#111827"/>
+            <path d="M375.644 126.065C375.644 148.144 322.077 166.043 255.999 166.043C189.921 166.043 136.355 148.144 136.355 126.065C136.355 103.985 189.921 86.0862 255.999 86.0862C322.077 86.0862 375.644 103.985 375.644 126.065Z" fill="white"/>
+            <path d="M455.407 343.283C455.407 316.07 406.59 292.669 336.623 282.322L334.811 282.69C311.212 287.346 284.413 289.978 256 289.978C226.856 289.978 199.409 287.208 175.376 282.322C105.409 292.669 56.5918 316.07 56.5918 343.283C56.5918 380.082 145.869 409.914 256 409.914C366.13 409.914 455.407 380.082 455.407 343.283Z" fill="white"/>
+            <path d="M415.526 223.347C415.526 199.799 369.838 179.82 306.468 172.762L304.833 173.026C289.752 175.398 273.267 176.704 256 176.704C238.105 176.704 221.053 175.302 205.531 172.764C142.161 179.819 96.4734 199.801 96.4734 223.347C96.4734 252.786 167.895 276.652 256 276.652C344.104 276.652 415.526 252.786 415.526 223.347Z" fill="white"/>
+          </svg>
+          <span class="balancer-logo-text">Balancer v3</span>
+        </div>
+        <span class="slide-badge">Proposal</span>
+      </header>
+
+      <div class="cover-body">
+        <div class="cover-token-row">
+          <div class="token-logo-placeholder" id="cover-logo-placeholder">IN</div>
+          <div class="token-logo-wrap" id="cover-logo-wrap" style="display:none">
+            <img id="cover-logo-img" src="" alt="" />
+          </div>
+          <span class="cover-x">&times;</span>
+          <div class="token-logo-placeholder" id="cover-logo-placeholder-b">DO</div>
+          <div class="token-logo-wrap" id="cover-logo-wrap-b" style="display:none">
+            <img id="cover-logo-img-b" src="" alt="" />
+          </div>
+        </div>
+
+        <h1 class="cover-title" id="cover-title">INV/DOLA AutoRange</h1>
+        <p class="cover-subtitle">Concentrated Liquidity &mdash; Fully Automated</p>
+      </div>
+
+      <div class="cover-footer-bar">
+        <span class="cover-footer-left">Prepared by Balancer</span>
+        <div class="slide-dots" id="dots-cover"></div>
+        <span class="cover-footer-right" id="cover-date">May 2026</span>
+      </div>
+    </section>
+
+
+    <!-- ══════════════════════════════════════════════════════
+         SLIDE 3 - WHAT IS AUTORANGE
+    ══════════════════════════════════════════════════════ -->
+    <section class="slide" id="slide-what">
+      <div class="grid-bg"></div>
+      <div class="glow-brand"></div>
+
+      <header class="slide-header">
+        <div class="balancer-logo">
+          <svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="508" height="508" rx="254" fill="#111827"/><path d="M375.644 126.065C375.644 148.144 322.077 166.043 255.999 166.043C189.921 166.043 136.355 148.144 136.355 126.065C136.355 103.985 189.921 86.0862 255.999 86.0862C322.077 86.0862 375.644 103.985 375.644 126.065Z" fill="white"/><path d="M455.407 343.283C455.407 316.07 406.59 292.669 336.623 282.322L334.811 282.69C311.212 287.346 284.413 289.978 256 289.978C226.856 289.978 199.409 287.208 175.376 282.322C105.409 292.669 56.5918 316.07 56.5918 343.283C56.5918 380.082 145.869 409.914 256 409.914C366.13 409.914 455.407 380.082 455.407 343.283Z" fill="white"/><path d="M415.526 223.347C415.526 199.799 369.838 179.82 306.468 172.762L304.833 173.026C289.752 175.398 273.267 176.704 256 176.704C238.105 176.704 221.053 175.302 205.531 172.764C142.161 179.819 96.4734 199.801 96.4734 223.347C96.4734 252.786 167.895 276.652 256 276.652C344.104 276.652 415.526 252.786 415.526 223.347Z" fill="white"/></svg>
+          <span class="balancer-logo-text">Balancer v3</span>
+        </div>
+        <span class="slide-badge">Overview</span>
+      </header>
+
+      <div class="slide-content-split">
+        <div class="split-left">
+          <p class="slide-eyebrow">What is AutoRange?</p>
+          <h2 class="slide-title">Concentrated liquidity<br/>that <em>manages itself</em></h2>
+          <div class="benefit-list">
+            <div class="benefit-item">
+              <div class="benefit-marker g"></div>
+              <div class="benefit-text">
+                <strong>Higher capital efficiency</strong>
+                <p>Same underlying math as Uniswap v3. Earns more fees per dollar of TVL,
+                making every unit of liquidity more productive.</p>
+              </div>
+            </div>
+            <div class="benefit-item">
+              <div class="benefit-marker b"></div>
+              <div class="benefit-text">
+                <strong>Automated management, fully on-chain</strong>
+                <p>The range shifts automatically as market price moves, with no external keeper or
+                third-party manager. All rebalancing logic lives in the smart contract (fully
+                transparent and auditable).</p>
+              </div>
+            </div>
+            <div class="benefit-item">
+              <div class="benefit-marker a"></div>
+              <div class="benefit-text">
+                <strong>Fungible positions, easy to incentivize</strong>
+                <p>All LPs share a single position, making them easy to incentivize.
+                Ideal for tokens that need deep, sustained liquidity.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="split-right">
+          <canvas id="range-canvas"></canvas>
+          <div class="canvas-legend">
+            <div class="legend-item"><div class="legend-dot" style="background:rgba(0,211,149,0.6)"></div>Price Range</div>
+            <div class="legend-item"><div class="legend-dot" style="background:rgba(246,173,85,0.6)"></div>Margin Zone</div>
+            <div class="legend-item"><div class="legend-dot" style="background:var(--brand)"></div>Market Price</div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="slide-footer">
+        <span class="slide-footer-label">INV / DOLA AutoRange - Balancer v3</span>
+        <div class="slide-dots" id="dots-what"></div>
+        <span class="slide-footer-label slide-num">03 / 07</span>
+      </footer>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════
+         SLIDE 3 - POOL PARAMETERS
+    ══════════════════════════════════════════════════════ -->
+    <section class="slide" id="slide-params">
+      <div class="grid-bg"></div>
+      <div class="glow-brand" style="width:500px;height:500px;right:-100px;top:-100px"></div>
+
+      <header class="slide-header">
+        <div class="balancer-logo">
+          <svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="508" height="508" rx="254" fill="#111827"/><path d="M375.644 126.065C375.644 148.144 322.077 166.043 255.999 166.043C189.921 166.043 136.355 148.144 136.355 126.065C136.355 103.985 189.921 86.0862 255.999 86.0862C322.077 86.0862 375.644 103.985 375.644 126.065Z" fill="white"/><path d="M455.407 343.283C455.407 316.07 406.59 292.669 336.623 282.322L334.811 282.69C311.212 287.346 284.413 289.978 256 289.978C226.856 289.978 199.409 287.208 175.376 282.322C105.409 292.669 56.5918 316.07 56.5918 343.283C56.5918 380.082 145.869 409.914 256 409.914C366.13 409.914 455.407 380.082 455.407 343.283Z" fill="white"/><path d="M415.526 223.347C415.526 199.799 369.838 179.82 306.468 172.762L304.833 173.026C289.752 175.398 273.267 176.704 256 176.704C238.105 176.704 221.053 175.302 205.531 172.764C142.161 179.819 96.4734 199.801 96.4734 223.347C96.4734 252.786 167.895 276.652 256 276.652C344.104 276.652 415.526 252.786 415.526 223.347Z" fill="white"/></svg>
+          <span class="balancer-logo-text">Balancer v3</span>
+        </div>
+        <span class="slide-badge">Parameters</span>
+      </header>
+
+      <div style="padding: 28px 48px 0;">
+        <p class="slide-eyebrow">How does it work?</p>
+      </div>
+
+      <div class="params-body">
+        <div class="param-row">
+          <div class="param-q">How wide is the liquidity range?</div>
+          <div class="param-a">The <strong>Price Ratio (PR)</strong> defines the width - the ratio between the highest and lowest price the pool actively covers.<br>A higher PR means a wider range: fewer shifts, but less concentrated liquidity.</div>
+        </div>
+        <div class="param-row">
+          <div class="param-q">When does the range start shifting?</div>
+          <div class="param-a">The <strong>Margin</strong> is a buffer zone at each edge of the range - once price enters it, the pool begins re-centering.<br>A tighter margin means fewer shifts, lower arb cost per adjustment, but less tolerance for fast moves.</div>
+        </div>
+        <div class="param-row">
+          <div class="param-q">How fast does it shift?</div>
+          <div class="param-a">The <strong>Shift Speed</strong> is proportional to how off-center the pool is - faster when lagging, gentler when nearly aligned.<br>No oracle or keeper needed. Re-centering is continuous and fully on-chain.</div>
+        </div>
+      </div>
+
+      <footer class="slide-footer">
+        <span class="slide-footer-label">INV / DOLA AutoRange - Balancer v3</span>
+        <div class="slide-dots" id="dots-params"></div>
+        <span class="slide-footer-label slide-num">04 / 07</span>
+      </footer>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════
+         SLIDE 4 - METHODOLOGY
+    ══════════════════════════════════════════════════════ -->
+    <section class="slide" id="slide-method">
+      <div class="grid-bg"></div>
+      <div class="glow-brand"></div>
+
+      <header class="slide-header">
+        <div class="balancer-logo">
+          <svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="508" height="508" rx="254" fill="#111827"/><path d="M375.644 126.065C375.644 148.144 322.077 166.043 255.999 166.043C189.921 166.043 136.355 148.144 136.355 126.065C136.355 103.985 189.921 86.0862 255.999 86.0862C322.077 86.0862 375.644 103.985 375.644 126.065Z" fill="white"/><path d="M455.407 343.283C455.407 316.07 406.59 292.669 336.623 282.322L334.811 282.69C311.212 287.346 284.413 289.978 256 289.978C226.856 289.978 199.409 287.208 175.376 282.322C105.409 292.669 56.5918 316.07 56.5918 343.283C56.5918 380.082 145.869 409.914 256 409.914C366.13 409.914 455.407 380.082 455.407 343.283Z" fill="white"/><path d="M415.526 223.347C415.526 199.799 369.838 179.82 306.468 172.762L304.833 173.026C289.752 175.398 273.267 176.704 256 176.704C238.105 176.704 221.053 175.302 205.531 172.764C142.161 179.819 96.4734 199.801 96.4734 223.347C96.4734 252.786 167.895 276.652 256 276.652C344.104 276.652 415.526 252.786 415.526 223.347Z" fill="white"/></svg>
+          <span class="balancer-logo-text">Balancer v3</span>
+        </div>
+        <span class="slide-badge">Methodology</span>
+      </header>
+
+      <div class="sim-body">
+        <div class="sim-left">
+          <div>
+            <p class="slide-eyebrow">How do we calibrate this pool?</p>
+          </div>
+          <p style="font-size:13px;color:var(--text2);line-height:1.7;margin-top:6px;">
+            The three parameters interact in non-obvious ways - wrong combinations can erode LP performance.
+          </p>
+          <p style="font-size:13px;color:var(--text2);line-height:1.7;">
+            The QuantAMM simulator replays every configuration against real market data, giving a calibrated, defensible recommendation.
+          </p>
+          <p style="font-size:13px;color:var(--text2);line-height:1.7;">
+            Arb flow, organic swap volume, and competitor pool liquidity are all modelled from on-chain data.
+          </p>
+          <a class="github-link" href="https://github.com/QuantAMMProtocol/quantammsim" target="_blank">
+            <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            QuantAMMProtocol/quantammsim
+          </a>
+        </div>
+
+        <div class="sim-right" style="padding:20px 48px 16px 40px;display:flex;flex-direction:column;gap:14px;justify-content:center">
+          <div class="offering-card">
+            <div class="offering-card-num">1</div>
+            <div class="offering-card-content">
+              <strong>Arb Simulation</strong>
+              <p>Price history replayed. Every arbitrage trade is computed from real price data with live gas costs.</p>
+            </div>
+          </div>
+          <div class="offering-card">
+            <div class="offering-card-num">2</div>
+            <div class="offering-card-content">
+              <strong>Organic Volume Model</strong>
+              <p>A calibrated Michaelis-Menten routing model separates genuine swap-fee income from arb costs. Organic flow is anchored to the token's real traded volume and scales with how much of the pair's liquidity this pool actually holds.</p>
+            </div>
+          </div>
+          <div class="offering-card">
+            <div class="offering-card-num">3</div>
+            <div class="offering-card-content">
+              <strong>Full Sensitivity Sweep</strong>
+              <p>1,000s of scenarios tested - 165 parameter combos across 5 rolling 2-month windows. Ranked by a blended POL score (HODL-return + fee yield), so the optimum reflects every market regime, not a best-case window.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="slide-footer">
+        <span class="slide-footer-label">AutoRange / Balancer v3</span>
+        <div class="slide-dots" id="dots-method"></div>
+        <span class="slide-footer-label slide-num">05 / 07</span>
+      </footer>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════
+         SLIDE 5 - PARAMETER SWEEP
+    ══════════════════════════════════════════════════════ -->
+    <section class="slide" id="slide-sweep">
+      <div class="grid-bg"></div>
+      <div class="glow-brand" style="width:400px;height:400px;right:-80px;bottom:-80px"></div>
+
+      <header class="slide-header">
+        <div class="balancer-logo">
+          <svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="508" height="508" rx="254" fill="#111827"/><path d="M375.644 126.065C375.644 148.144 322.077 166.043 255.999 166.043C189.921 166.043 136.355 148.144 136.355 126.065C136.355 103.985 189.921 86.0862 255.999 86.0862C322.077 86.0862 375.644 103.985 375.644 126.065Z" fill="white"/><path d="M455.407 343.283C455.407 316.07 406.59 292.669 336.623 282.322L334.811 282.69C311.212 287.346 284.413 289.978 256 289.978C226.856 289.978 199.409 287.208 175.376 282.322C105.409 292.669 56.5918 316.07 56.5918 343.283C56.5918 380.082 145.869 409.914 256 409.914C366.13 409.914 455.407 380.082 455.407 343.283Z" fill="white"/><path d="M415.526 223.347C415.526 199.799 369.838 179.82 306.468 172.762L304.833 173.026C289.752 175.398 273.267 176.704 256 176.704C238.105 176.704 221.053 175.302 205.531 172.764C142.161 179.819 96.4734 199.801 96.4734 223.347C96.4734 252.786 167.895 276.652 256 276.652C344.104 276.652 415.526 252.786 415.526 223.347Z" fill="white"/></svg>
+          <span class="balancer-logo-text">Balancer v3</span>
+        </div>
+        <span class="slide-badge">Sweep</span>
+      </header>
+
+      <div class="sweep-body">
+        <div class="sweep-left">
+          <div>
+            <p class="slide-eyebrow">Automated grid search</p>
+          </div>
+          <p class="sweep-desc">
+            Every combination of parameters is tested by the simulator across 5 rolling 2-month windows over INV's last 6 months.
+          </p>
+          <p class="sweep-desc">
+            Each cell is the <strong style="color:var(--text)">median return vs HODL</strong> across the windows — greener is less divergence loss. The surface tilts green toward the <em style="font-style:normal;color:var(--text)">wider</em> right edge: on INV's one-way drawdown, looser ranges track HODL more closely.
+          </p>
+          <p class="sweep-desc">
+            The top candidates are then reviewed manually - looking at consistency across regimes, robustness to INV's sharp drawdowns, and alignment with Inverse's risk appetite - before a final recommendation is made.
+          </p>
+          <p class="sweep-desc">
+            For protocol-owned liquidity we balanced <strong style="color:var(--text)">HODL performance</strong> and <strong style="color:var(--text)">fee / volume generation</strong> - keeping the basket intact while making INV/DOLA liquidity productive.
+          </p>
+          <div class="sweep-stats">
+            <div class="sweep-stat">
+              <span class="sweep-stat-n">5</span>
+              <span class="sweep-stat-l">rolling windows</span>
+            </div>
+            <div class="sweep-stat">
+              <span class="sweep-stat-n">165</span>
+              <span class="sweep-stat-l">param combos</span>
+            </div>
+            <div class="sweep-stat">
+              <span class="sweep-stat-n">1,000s</span>
+              <span class="sweep-stat-l">simulations run</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sweep-right">
+          <div class="hm-scene">
+            <div class="hm-inner" id="hm-3d-inner"></div>
+          </div>
+          <div style="font-size:9px;color:var(--text3);text-align:center;margin-top:6px">&larr; wider price range / looser margin &rarr;</div>
+        </div>
+      </div>
+
+      <footer class="slide-footer">
+        <span class="slide-footer-label">INV / DOLA AutoRange - Balancer v3</span>
+        <div class="slide-dots" id="dots-sweep"></div>
+        <span class="slide-footer-label slide-num">06 / 09</span>
+      </footer>
+    </section>
+
+    <!-- ══════════════════════════════════════════════════════
+         SLIDE 7 - RESULTS (full year vs HODL)
+    ══════════════════════════════════════════════════════ -->
+    <section class="slide" id="slide-results">
+      <div class="grid-bg"></div>
+      <div class="glow-green"></div>
+      <header class="slide-header">
+        <div class="balancer-logo">
+          <svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="508" height="508" rx="254" fill="#111827"/><path d="M375.644 126.065C375.644 148.144 322.077 166.043 255.999 166.043C189.921 166.043 136.355 148.144 136.355 126.065C136.355 103.985 189.921 86.0862 255.999 86.0862C322.077 86.0862 375.644 103.985 375.644 126.065Z" fill="white"/><path d="M455.407 343.283C455.407 316.07 406.59 292.669 336.623 282.322L334.811 282.69C311.212 287.346 284.413 289.978 256 289.978C226.856 289.978 199.409 287.208 175.376 282.322C105.409 292.669 56.5918 316.07 56.5918 343.283C56.5918 380.082 145.869 409.914 256 409.914C366.13 409.914 455.407 380.082 455.407 343.283Z" fill="white"/><path d="M415.526 223.347C415.526 199.799 369.838 179.82 306.468 172.762L304.833 173.026C289.752 175.398 273.267 176.704 256 176.704C238.105 176.704 221.053 175.302 205.531 172.764C142.161 179.819 96.4734 199.801 96.4734 223.347C96.4734 252.786 167.895 276.652 256 276.652C344.104 276.652 415.526 252.786 415.526 223.347Z" fill="white"/></svg>
+          <span class="balancer-logo-text">Balancer v3</span>
+        </div>
+        <span class="slide-badge">Results</span>
+      </header>
+
+      <div style="padding:14px 48px 0">
+        <p class="slide-eyebrow">Backtest · Dec 2025 → Jun 2026</p>
+        <h2 class="slide-title" style="font-size:28px;margin-top:2px">Every parameter set, <em>replayed on real prices</em></h2>
+      </div>
+
+      <div class="results-body" style="flex-direction:row;gap:16px">
+        <div class="chart-card" style="flex:1.5">
+          <div class="chart-card-title">Portfolio value vs HODL (indexed to 100), $500k pool</div>
+          <div class="chart-canvas-wrap"><canvas id="period-canvas"></canvas></div>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;gap:10px;min-height:0">
+          <div style="display:flex;justify-content:space-between;font-size:9px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--text3);padding:0 8px">
+            <span>Strategy</span><span style="display:flex;gap:10px"><span>vs HODL</span><span>Fee&nbsp;yr</span></span>
+          </div>
+          <div id="results-table" style="display:flex;flex-direction:column;gap:5px"></div>
+          <div class="sens-note" style="margin-top:auto;font-size:11px">
+            Concentration sells INV as it falls (divergence loss) and pays arb on every re-center, so it trails HODL more than a passive pool. Organic swap fees (4&ndash;7%) soften but don't erase that on a one-way year.
+          </div>
+        </div>
+      </div>
+
+      <footer class="slide-footer">
+        <span class="slide-footer-label">INV / DOLA AutoRange - Balancer v3</span>
+        <div class="slide-dots" id="dots-results"></div>
+        <span class="slide-footer-label slide-num">07 / 09</span>
+      </footer>
+    </section>
+
+
+    <!-- ══════════════════════════════════════════════════════
+         SLIDE 2 - SECURITY
+    ══════════════════════════════════════════════════════ -->
+    <section class="slide" id="slide-security">
+      <div class="grid-bg"></div>
+      <div class="glow-brand" style="width:400px;height:400px;right:-80px;top:-80px"></div>
+
+      <header class="slide-header">
+        <div class="balancer-logo">
+          <svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="508" height="508" rx="254" fill="#111827"/><path d="M375.644 126.065C375.644 148.144 322.077 166.043 255.999 166.043C189.921 166.043 136.355 148.144 136.355 126.065C136.355 103.985 189.921 86.0862 255.999 86.0862C322.077 86.0862 375.644 103.985 375.644 126.065Z" fill="white"/><path d="M455.407 343.283C455.407 316.07 406.59 292.669 336.623 282.322L334.811 282.69C311.212 287.346 284.413 289.978 256 289.978C226.856 289.978 199.409 287.208 175.376 282.322C105.409 292.669 56.5918 316.07 56.5918 343.283C56.5918 380.082 145.869 409.914 256 409.914C366.13 409.914 455.407 380.082 455.407 343.283Z" fill="white"/><path d="M415.526 223.347C415.526 199.799 369.838 179.82 306.468 172.762L304.833 173.026C289.752 175.398 273.267 176.704 256 176.704C238.105 176.704 221.053 175.302 205.531 172.764C142.161 179.819 96.4734 199.801 96.4734 223.347C96.4734 252.786 167.895 276.652 256 276.652C344.104 276.652 415.526 252.786 415.526 223.347Z" fill="white"/></svg>
+          <span class="balancer-logo-text">Balancer v3</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;margin-left:auto">
+          <a class="github-link" href="https://github.com/balancer/reclamm/tree/reclamm-2.1/audits" target="_blank">
+            <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            Audits Reports
+          </a>
+          <span class="slide-badge">Security</span>
+        </div>
+      </header>
+
+      <div style="padding: 10px 48px 0">
+        <p class="slide-eyebrow">Audits &amp; monitoring</p>
+        <h2 class="slide-title" style="font-size:30px;margin-top:4px">Multiple layers of <em>security review</em></h2>
+      </div>
+
+      <div class="security-body">
+
+        <!-- Column 1: Code Audits -->
+        <div class="security-col">
+          <div class="security-col-title">Code Audits</div>
+          <div class="security-item">
+            <div class="security-logo">
+              <img src="https://www.google.com/s2/favicons?domain=cantina.xyz&sz=64" alt="Cantina" onerror="this.parentNode.innerHTML='<span style=\'font-size:11px;font-weight:700;color:var(--brand)\'>CA</span>'" />
+            </div>
+            <span class="security-item-name">Cantina</span>
+          </div>
+          <div class="security-item">
+            <div class="security-logo">
+              <img src="https://www.google.com/s2/favicons?domain=certora.com&sz=64" alt="Certora" onerror="this.parentNode.innerHTML='<span style=\'font-size:11px;font-weight:700;color:var(--brand)\'>CE</span>'" />
+            </div>
+            <span class="security-item-name">Certora</span>
+          </div>
+        </div>
+
+        <!-- Column 2: AI Security Reviews -->
+        <div class="security-col security-col-wide">
+          <div class="security-col-title">AI Reviews</div>
+          <div class="security-item">
+            <div class="security-logo">
+              <img src="https://www.google.com/s2/favicons?domain=nethermind.io&sz=64" alt="AgentArena" onerror="this.parentNode.innerHTML='<span style=\'font-size:9px;font-weight:700;color:var(--brand)\'>AA</span>'" />
+            </div>
+            <span class="security-item-name">AgentArena</span>
+          </div>
+          <div class="security-item">
+            <div class="security-logo">
+              <img src="https://www.google.com/s2/favicons?domain=olympix.ai&sz=64" alt="Olympix" onerror="this.parentNode.innerHTML='<span style=\'font-size:9px;font-weight:700;color:var(--brand)\'>OL</span>'" />
+            </div>
+            <span class="security-item-name">Olympix</span>
+          </div>
+          <div class="security-item">
+            <div class="security-logo">
+              <img src="https://avatars.githubusercontent.com/u/190101117?v=4" alt="FailSafe" onerror="this.parentNode.innerHTML='<span style=\'font-size:9px;font-weight:700;color:var(--brand)\'>FS</span>'" />
+            </div>
+            <span class="security-item-name">FailSafe</span>
+          </div>
+          <div class="security-item">
+            <div class="security-logo">
+              <img src="https://www.google.com/s2/favicons?domain=octane.security&sz=64" alt="Octane" onerror="this.parentNode.innerHTML='<span style=\'font-size:9px;font-weight:700;color:var(--brand)\'>OC</span>'" />
+            </div>
+            <span class="security-item-name">Octane</span>
+          </div>
+        </div>
+
+        <!-- Column 3: Live Monitoring -->
+        <div class="security-col">
+          <div class="security-col-title">Live Monitoring</div>
+          <div class="security-monitoring-card">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div class="security-logo">
+                <img src="https://www.google.com/s2/favicons?domain=hypernative.io&sz=64" alt="Hypernative" onerror="this.parentNode.innerHTML='<span style=\'font-size:11px;font-weight:700;color:var(--green)\'>HN</span>'" />
+              </div>
+              <strong style="font-size:14px;font-weight:700;color:var(--text)">Hypernative</strong>
+              <div class="security-tag"><div class="security-tag-dot"></div>Live</div>
+            </div>
+            <div class="security-monitoring-stat">
+              <strong>24/7 threat detection</strong>
+              <span>Continuous on-chain monitoring with real-time alerting across all pool activity.</span>
+            </div>
+            <div class="security-monitoring-stat">
+              <strong>Immediate-pause capability</strong>
+              <span>Automated circuit breaker can pause the pool in seconds if anomalous behavior is detected.</span>
+            </div>
+            <div class="security-monitoring-stat">
+              <strong>Emergency subDAO</strong>
+              <span>Dedicated team with on-call rotations that can act without the full governance latency.</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <footer class="slide-footer">
+        <span class="slide-footer-label">AutoRange / Balancer v3</span>
+        <div class="slide-dots" id="dots-security"></div>
+        <span class="slide-footer-label slide-num">02 / 07</span>
+      </footer>
+    </section>
+    <!-- ══════════════════════════════════════════════════════
+         SLIDE 9 - PROPOSAL
+    ══════════════════════════════════════════════════════ -->
+    <section class="slide" id="slide-proposal">
+      <div class="grid-bg"></div>
+      <div class="glow-brand"></div>
+
+      <header class="slide-header">
+        <div class="balancer-logo">
+          <svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="508" height="508" rx="254" fill="#111827"/><path d="M375.644 126.065C375.644 148.144 322.077 166.043 255.999 166.043C189.921 166.043 136.355 148.144 136.355 126.065C136.355 103.985 189.921 86.0862 255.999 86.0862C322.077 86.0862 375.644 103.985 375.644 126.065Z" fill="white"/><path d="M455.407 343.283C455.407 316.07 406.59 292.669 336.623 282.322L334.811 282.69C311.212 287.346 284.413 289.978 256 289.978C226.856 289.978 199.409 287.208 175.376 282.322C105.409 292.669 56.5918 316.07 56.5918 343.283C56.5918 380.082 145.869 409.914 256 409.914C366.13 409.914 455.407 380.082 455.407 343.283Z" fill="white"/><path d="M415.526 223.347C415.526 199.799 369.838 179.82 306.468 172.762L304.833 173.026C289.752 175.398 273.267 176.704 256 176.704C238.105 176.704 221.053 175.302 205.531 172.764C142.161 179.819 96.4734 199.801 96.4734 223.347C96.4734 252.786 167.895 276.652 256 276.652C344.104 276.652 415.526 252.786 415.526 223.347Z" fill="white"/></svg>
+          <span class="balancer-logo-text">Balancer v3</span>
+        </div>
+        <span class="slide-badge">Proposal</span>
+      </header>
+
+      <div class="proposal-body">
+        <div class="proposal-hero">
+          <p class="slide-eyebrow">Recommended configuration</p>
+          <h2 class="proposal-config">INV/DOLA <span style="color:var(--green)">AutoRange</span></h2>
+        </div>
+
+        <div class="proposal-two-col">
+          <div class="proposal-params-col">
+            <div class="proposal-col-label">Parameters <span class="param-badge">Mutable</span></div>
+            <div class="proposal-param-row">
+              <span class="proposal-param-name">Price Ratio</span>
+              <span class="proposal-param-sep"></span>
+              <span class="proposal-param-val">4.0</span>
+            </div>
+            <div class="proposal-param-row">
+              <span class="proposal-param-name">Margin</span>
+              <span class="proposal-param-sep"></span>
+              <span class="proposal-param-val">50%</span>
+            </div>
+            <div class="proposal-param-row">
+              <span class="proposal-param-name">Shift Speed</span>
+              <span class="proposal-param-sep"></span>
+              <span class="proposal-param-val">2%/day</span>
+            </div>
+            <div class="proposal-param-row">
+              <span class="proposal-param-name">Swap Fee</span>
+              <span class="proposal-param-sep"></span>
+              <span class="proposal-param-val">0.5%</span>
+            </div>
+          </div>
+
+          <div class="proposal-steps-col">
+            <div class="proposal-col-label">Next Steps</div>
+            <div class="proposal-step-row">
+              <span class="proposal-step-n">1</span>
+              <span class="proposal-step-text">Deploy the pool</span>
+            </div>
+            <div class="proposal-step-row">
+              <span class="proposal-step-n">2</span>
+              <span class="proposal-step-text">Share LP pool page</span>
+            </div>
+            <div class="proposal-step-row">
+              <span class="proposal-step-n">3</span>
+              <span class="proposal-step-text">Align on comms &amp; GTM</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="slide-footer">
+        <span class="slide-footer-label">AutoRange / Balancer v3</span>
+        <div class="slide-dots" id="dots-proposal"></div>
+        <span class="slide-footer-label slide-num">07 / 07</span>
+      </footer>
+    </section>
+
+  </div><!-- /deck -->
+  <button id="nav-next">&#8594;</button>
+</div><!-- /deck-wrap -->
+
+<button id="pdf-btn" onclick="exportPDF()">
+  <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+    <path d="M11 2H5a1 1 0 0 0-1 1v2H2.5A1.5 1.5 0 0 0 1 6.5v5A1.5 1.5 0 0 0 2.5 13H4v1a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-1h1.5A1.5 1.5 0 0 0 15 11.5v-5A1.5 1.5 0 0 0 13.5 5H13V3a1 1 0 0 0-1-1zm1 3H4V3h8v2zm-7 9v-4h6v4H5zm8-3.5a.5.5 0 1 1-1 0 .5.5 0 0 1 1 0z"/>
+  </svg>
+  Export PDF
+</button>
+
+<script>
+// ─── SIMULATION DATA (from results/inv_dola_analysis, base scenario V_max $75k/day, K $1.5M) ───
+const DECK_DATA = {"pool":{"tvl":500000.0,"fees":0.003,"v_max":75000.0,"k":1500000.0,"start":"2025-12-20","end":"2026-06-20","inv_vol_median":104000,"inv_vol_mean":191000},"headline":{"pr3":{"roh_pct":-22.7,"fee_usd":12745.0,"fee_yield_pct":5.1,"final_value":258039.0},"pr4":{"roh_pct":-21.7,"fee_usd":11713.0,"fee_yield_pct":4.7,"final_value":261603.0},"pr5":{"roh_pct":-21.0,"fee_usd":11072.0,"fee_yield_pct":4.4,"final_value":263827.0},"pr6":{"roh_pct":-20.5,"fee_usd":10627.0,"fee_yield_pct":4.3,"final_value":265505.0},"pr8":{"roh_pct":-19.7,"fee_usd":10044.0,"fee_yield_pct":4.0,"final_value":268010.0},"pr10":{"roh_pct":-19.2,"fee_usd":9657.0,"fee_yield_pct":3.9,"final_value":269687.0},"pr20":{"roh_pct":-17.9,"fee_usd":8754.0,"fee_yield_pct":3.5,"final_value":274338.0},"balancer":{"roh_pct":-11.6,"fee_yield_pct":0.0},"inv_drawdown_pct":-66.4,"inv_start_px":30.73,"inv_end_px":10.32},"series":{"labels":["Dec'25","","","","","","","","","","","","",""],"pr_list":[3,4,5,6,8,10,20],"hodl":[100.0,98.3,95.3,88.2,80.7,80.0,76.8,73.5,74.8,75.3,73.4,69.2,66.6,66.8],"balancer":[100.0,98.4,95.5,87.8,78.9,78.1,73.9,69.3,71.3,72.1,69.5,63.1,58.7,59.0],"inv_price":[30.73,29.68,27.87,23.49,18.89,18.47,16.46,14.43,15.27,15.55,14.4,11.82,10.21,10.32],"pr3":[100.0,98.5,95.5,85.9,74.2,73.1,68.5,63.0,65.4,66.4,63.7,56.4,51.2,51.6],"pr4":[100.0,98.5,95.5,86.4,74.8,73.9,69.1,63.7,66.1,67.1,64.4,57.0,52.0,52.3],"pr5":[100.0,98.5,95.5,86.6,75.3,74.3,69.6,64.2,66.6,67.5,64.7,57.4,52.4,52.8],"pr6":[100.0,98.5,95.5,86.7,75.5,74.6,69.8,64.5,66.9,67.8,65.0,57.7,52.7,53.1],"pr8":[100.0,98.5,95.5,86.9,76.0,75.0,70.3,65.0,67.3,68.3,65.5,58.2,53.2,53.6],"pr10":[100.0,98.5,95.5,87.1,76.2,75.3,70.6,65.3,67.6,68.5,65.7,58.5,53.6,53.9],"pr20":[100.0,98.5,95.5,87.3,76.9,76.0,71.3,66.1,68.4,69.3,66.5,59.4,54.5,54.9]},"heatmap":{"pr_cols":[1.5,2.0,2.5,3.0,4.0,5.0,6.0,8.0,10.0,15.0,20.0],"margin_rows":[0.1,0.2,0.3,0.4,0.5],"metric":"median_roh","grid":[[-12.5,-9.8,-7.8,-6.3,-5.0,-4.3,-3.9,-3.5,-3.2,-2.8,-2.6],[-10.9,-8.9,-7.6,-6.5,-5.1,-4.3,-3.9,-3.5,-3.2,-2.8,-2.6],[-9.5,-7.8,-6.8,-6.2,-5.2,-4.5,-4.0,-3.5,-3.2,-2.8,-2.6],[-8.3,-6.7,-6.0,-5.5,-4.9,-4.4,-4.1,-3.6,-3.3,-2.8,-2.6],[-6.9,-5.7,-5.2,-4.8,-4.4,-4.0,-3.8,-3.5,-3.2,-2.9,-2.7]]},"sensitivity":[{"label":"Arb-only (no organic)","v_max":50.0,"conc_fee":0.0,"conc_roh":-24.18,"best_roh_pr":20.0},{"label":"Thin flow / competitive","v_max":75000.0,"conc_fee":4.7,"conc_roh":-21.67,"best_roh_pr":20.0},{"label":"Real median vol, competitive","v_max":104000.0,"conc_fee":6.52,"conc_roh":-20.7,"best_roh_pr":20.0},{"label":"Active vol, competitive","v_max":190000.0,"conc_fee":11.97,"conc_roh":-17.76,"best_roh_pr":20.0},{"label":"POL is primary venue","v_max":104000.0,"conc_fee":10.85,"conc_roh":-18.3,"best_roh_pr":20.0}],"recommend":{"price_ratio":4.0,"margin":50,"shift_pct_day":2,"fee_pct":0.3}};
+
+// ─── CONFIG ────────────────────────────────────────────────────────
+const CONFIG = {
+  tokenA:       'INV',
+  tokenB:       'DOLA',
+  tokenLogoUrl: 'https://coin-images.coingecko.com/coins/images/14205/large/inverse_finance.jpg?1696513922',
+  tokenBLogoUrl:'https://coin-images.coingecko.com/coins/images/14287/large/dola.png?1696513984',
+  brandColor:   '#16C79A',
+  preparedBy:   'Balancer',
+  date:         'June 2026',
+  hiddenSlides: [],
+};
+
+// ─── APPLY BRAND COLOR ─────────────────────────────────────────────
+(function applyBrand() {
+  const color = CONFIG.brandColor || '#3B82F6';
+  const r = parseInt(color.slice(1,3), 16);
+  const g = parseInt(color.slice(3,5), 16);
+  const b = parseInt(color.slice(5,7), 16);
+  const dr = Math.round(r * 0.55), dg = Math.round(g * 0.55), db = Math.round(b * 0.55);
+  const root = document.documentElement;
+  root.style.setProperty('--brand',     color);
+  root.style.setProperty('--brand-dim', `rgb(${dr},${dg},${db})`);
+  root.style.setProperty('--brand-rgb', `${r},${g},${b}`);
+})();
+
+// ─── APPLY CONTENT CONFIG ──────────────────────────────────────────
+(function applyConfig() {
+  const { tokenA, tokenB, tokenLogoUrl, tokenBLogoUrl, date } = CONFIG;
+
+  document.getElementById('page-title').textContent = `${tokenA}/${tokenB} AutoRange`;
+  document.getElementById('cover-date').textContent  = date;
+
+  function mountLogo(sym, url, phId, wrapId, imgId) {
+    const placeholder = document.getElementById(phId);
+    const wrap        = document.getElementById(wrapId);
+    const img         = document.getElementById(imgId);
+    if (url) {
+      img.src = url;
+      img.onerror = () => {
+        wrap.style.display = 'none';
+        placeholder.style.display = 'flex';
+        placeholder.textContent = sym.slice(0,2).toUpperCase();
+      };
+      wrap.style.display = 'block';
+      placeholder.style.display = 'none';
+    } else {
+      placeholder.textContent = sym.slice(0,2).toUpperCase();
+    }
+  }
+  mountLogo(tokenA, tokenLogoUrl,  'cover-logo-placeholder',   'cover-logo-wrap',   'cover-logo-img');
+  mountLogo(tokenB, tokenBLogoUrl, 'cover-logo-placeholder-b', 'cover-logo-wrap-b', 'cover-logo-img-b');
+})();
+
+// ─── DECK SCALING ──────────────────────────────────────────────────
+function scaleDeck() {
+  const deck  = document.getElementById('deck');
+  const wW    = window.innerWidth;
+  const wH    = window.innerHeight;
+  const scale = Math.min(wW / 1280, wH / 720);
+  const ox    = (wW - 1280 * scale) / 2;
+  const oy    = (wH - 720  * scale) / 2;
+  deck.style.transform = `translate(${ox}px, ${oy}px) scale(${scale})`;
+
+  const prev = document.getElementById('nav-prev');
+  const next = document.getElementById('nav-next');
+  prev.style.left  = Math.max(8, ox - 54) + 'px';
+  next.style.left  = Math.min(wW - 54, ox + 1280 * scale + 14) + 'px';
+  next.style.right = 'auto';
+}
+window.addEventListener('resize', scaleDeck);
+scaleDeck();
+
+// ─── HIDE SLIDES ───────────────────────────────────────────────────
+(CONFIG.hiddenSlides || []).forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.remove();
+});
+
+// ─── NAVIGATION ────────────────────────────────────────────────────
+const slides  = Array.from(document.querySelectorAll('.slide'));
+let current   = 0;
+
+slides.forEach((slide, i) => {
+  const num = slide.querySelector('.slide-num');
+  if (num) num.textContent = `${String(i+1).padStart(2,'0')} / ${String(slides.length).padStart(2,'0')}`;
+});
+
+const sweepIdx   = slides.findIndex(s => s.id === 'slide-sweep');
+const whatIdx    = slides.findIndex(s => s.id === 'slide-what');
+const resultsIdx = slides.findIndex(s => s.id === 'slide-results');
+
+function goTo(idx) {
+  slides[current].classList.remove('active');
+  current = Math.max(0, Math.min(slides.length - 1, idx));
+  slides[current].classList.add('active');
+  updateDots();
+  if (current === whatIdx)    startRangeAnim();
+  if (current === sweepIdx)   buildSweepHeatmap();
+  if (current === resultsIdx) initResultsCharts();
+}
+
+document.getElementById('nav-prev').addEventListener('click', () => goTo(current - 1));
+document.getElementById('nav-next').addEventListener('click', () => goTo(current + 1));
+document.addEventListener('keydown', e => {
+  if (['ArrowRight','ArrowDown',' '].includes(e.key)) goTo(current + 1);
+  if (['ArrowLeft', 'ArrowUp'].includes(e.key))       goTo(current - 1);
+});
+
+// Deep-link: ?slide=N (1-based) jumps to a slide on load (handy for sharing/preview)
+(function deepLink() {
+  const m = /[?&]slide=(\d+)/.exec(location.search);
+  if (m) requestAnimationFrame(() => goTo(parseInt(m[1], 10) - 1));
+})();
+
+// ─── DOTS ──────────────────────────────────────────────────────────
+['dots-cover','dots-security','dots-what','dots-params','dots-method','dots-sweep','dots-results','dots-proposal'].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  slides.forEach((_, i) => {
+    const d = document.createElement('div');
+    d.className = 'slide-dot' + (i === 0 ? ' active' : '');
+    d.addEventListener('click', () => goTo(i));
+    el.appendChild(d);
+  });
+});
+
+function updateDots() {
+  document.querySelectorAll('.slide-dot').forEach((d, i) => {
+    d.classList.toggle('active', (i % slides.length) === current);
+  });
+}
+
+// ─── SLIDE 2: RANGE ANIMATION ─────────────────────────────────────
+let rangeAnimStarted = false;
+let _rangeAnimResolve;
+const rangeAnimDone = new Promise(res => { _rangeAnimResolve = res; });
+
+async function fetchInvPrices() {
+  try {
+    const res = await fetch(
+      'https://api.coingecko.com/api/v3/coins/inverse-finance/market_chart?vs_currency=usd&days=90&interval=daily',
+      { cache: 'force-cache' }
+    );
+    if (!res.ok) throw new Error('non-200');
+    const json = await res.json();
+    if (json.prices && json.prices.length > 10) return json.prices.map(([,p]) => p);
+  } catch { /* fall through */ }
+  return null;
+}
+
+async function startRangeAnim() {
+  if (rangeAnimStarted) return;
+  rangeAnimStarted = true;
+
+  let rawPrices = await fetchInvPrices();
+
+  if (!rawPrices) {
+    rawPrices = [0.25];
+    const drift = [
+      ...Array.from({length:30}, (_,i) => 0.002 + 0.003*Math.sin(i*0.15)),
+      ...Array.from({length:30}, (_,i) => -0.001 - 0.002*Math.sin(i*0.12)),
+      ...Array.from({length:31}, (_,i) =>  0.002 + 0.002*Math.sin(i*0.1)),
+    ];
+    let rng = 42;
+    const rand = () => { rng=(rng*1664525+1013904223)&0xffffffff; return (rng>>>0)/0xffffffff; };
+    for (let i = 1; i < 91; i++)
+      rawPrices.push(Math.max(0.15, Math.min(0.55, rawPrices[i-1] + (drift[i-1]||0) + (rand()-0.5)*0.008)));
+  }
+
+  const prices = rawPrices;
+  const N      = prices.length;
+
+  const canvas = document.getElementById('range-canvas');
+  const ctx    = canvas.getContext('2d');
+
+  const dpr    = window.devicePixelRatio || 1;
+  const W_css  = canvas.offsetWidth;
+  const H_css  = canvas.offsetHeight;
+  canvas.width  = W_css * dpr;
+  canvas.height = H_css * dpr;
+  ctx.scale(dpr, dpr);
+  const W = W_css, H = H_css;
+
+  const PAD   = { l: 54, r: 102, t: 28, b: 36 };
+  const PW    = W - PAD.l - PAD.r;
+  const PH    = H - PAD.t - PAD.b;
+
+  const pMin  = Math.min(...prices);
+  const pMax  = Math.max(...prices);
+  const span  = pMax - pMin;
+  const pPad  = span * 0.10;
+  const yMin  = pMin - pPad;
+  const yMax  = pMax + pPad;
+
+  const toX = i => PAD.l + (i / (N - 1)) * PW;
+  const toY = p => PAD.t + PH - ((p - yMin) / (yMax - yMin)) * PH;
+
+  const RHALF_ABS   = (span / 2) * 1.3;
+  const MARGIN_FRAC = 0.55;
+  const SHIFT_SPEED = 0.16;
+
+  let t  = 0;
+  let rc = (pMax + pMin) / 2;
+
+  const brandColor = getComputedStyle(document.documentElement).getPropertyValue('--brand').trim() || '#3B82F6';
+
+  function niceStep(span) {
+    const raw = span / 5;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const r   = raw / mag;
+    return (r < 1.5 ? 1 : r < 3.5 ? 2 : r < 7.5 ? 5 : 10) * mag;
+  }
+  function fmtPrice(v) {
+    if (v >= 1000) return `$${(v / 1000).toFixed(1)}k`;
+    if (v >= 1)    return `$${v.toFixed(2)}`;
+    const dec = Math.max(2, -Math.floor(Math.log10(Math.abs(v))) + 1);
+    return `$${v.toFixed(Math.min(dec, 6))}`;
+  }
+  const step   = niceStep(yMax - yMin);
+  const tFirst = Math.ceil(yMin / step) * step;
+  const ticks  = [];
+  for (let v = tFirst; v <= yMax; v += step) ticks.push(parseFloat(v.toPrecision(10)));
+
+  const now    = new Date();
+  const tLabels = Array.from({length:4}, (_,i) => {
+    const d = new Date(now);
+    d.setDate(d.getDate() - Math.round(90 * (1 - i/3)));
+    return d.toLocaleDateString('en', {month:'short'});
+  });
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#252B35';
+    ctx.fillRect(0, 0, W, H);
+
+    const vi  = Math.min(N - 1, Math.floor(t));
+    const cur = prices[vi];
+
+    const RHALF = RHALF_ABS;
+    const MHALF = RHALF * MARGIN_FRAC;
+    if (Math.abs(cur - rc) > MHALF) rc += (cur - rc) * SHIFT_SPEED * 0.4;
+
+    const rTop = rc + RHALF, rBot = rc - RHALF;
+    const mTop = rc + MHALF, mBot = rc - MHALF;
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
+    ticks.forEach(v => {
+      const y = toY(v);
+      ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(W - PAD.r, y); ctx.stroke();
+    });
+
+    ctx.fillStyle = 'rgba(154,163,176,0.6)'; ctx.font = `${10 * 1}px Inter`; ctx.textAlign = 'right';
+    ticks.forEach(v => ctx.fillText(fmtPrice(v), PAD.l - 6, toY(v) + 4));
+
+    ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(154,163,176,0.5)';
+    tLabels.forEach((l, i) => ctx.fillText(l, PAD.l + (i/3)*PW, H - 8));
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PAD.l, PAD.t, PW, PH);
+    ctx.clip();
+
+    const yRT = toY(rTop), yRB = toY(rBot);
+    const grad = ctx.createLinearGradient(0, yRT, 0, yRB);
+    grad.addColorStop(0,   'rgba(0,211,149,0.09)');
+    grad.addColorStop(0.5, 'rgba(0,211,149,0.16)');
+    grad.addColorStop(1,   'rgba(0,211,149,0.09)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(PAD.l, yRT, PW, yRB - yRT);
+
+    const yMT = toY(mTop), yMB = toY(mBot);
+    ctx.fillStyle = 'rgba(246,173,85,0.10)';
+    ctx.fillRect(PAD.l, yRT, PW, yMT - yRT);
+    ctx.fillRect(PAD.l, yMB, PW, yRB - yMB);
+
+    ctx.setLineDash([]); ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(0,211,149,0.5)';
+    [yRT, yRB].forEach(y => { ctx.beginPath(); ctx.moveTo(PAD.l,y); ctx.lineTo(W-PAD.r,y); ctx.stroke(); });
+
+    ctx.setLineDash([4,4]); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(246,173,85,0.55)';
+    [yMT, yMB].forEach(y => { ctx.beginPath(); ctx.moveTo(PAD.l,y); ctx.lineTo(W-PAD.r,y); ctx.stroke(); });
+    ctx.setLineDash([]);
+
+    ctx.restore();
+
+    const clampLabelY = y => Math.max(PAD.t + 10, Math.min(PAD.t + PH - 4, y));
+    const lx = W - PAD.r + 6;
+    ctx.font = 'bold 9px Inter'; ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(0,211,149,0.8)';
+    ctx.fillText('Max Price',    lx, clampLabelY(yRT) + 4);
+    ctx.fillText('Min Price',    lx, clampLabelY(yRB) + 4);
+    ctx.fillStyle = 'rgba(246,173,85,0.8)';
+    ctx.fillText('Upper Margin', lx, clampLabelY(yMT) + 4);
+    ctx.fillText('Lower Margin', lx, clampLabelY(yMB) + 4);
+
+    ctx.strokeStyle = brandColor; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (let i = 0; i <= vi; i++) {
+      const x = toX(i), y = toY(prices[i]);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    const dx = toX(vi), dy = toY(cur);
+    ctx.beginPath(); ctx.arc(dx, dy, 5, 0, Math.PI * 2);
+    ctx.fillStyle = brandColor; ctx.fill();
+    ctx.strokeStyle = brandColor + '44'; ctx.lineWidth = 7; ctx.stroke(); ctx.lineWidth = 1;
+
+    ctx.font = 'bold 11px Inter'; ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(240,234,224,0.55)';
+    ctx.fillText('INV / USD', PAD.l + 8, PAD.t + 18);
+
+    if (t < N - 1) {
+      t = Math.min(N - 1, t + 0.04);
+      requestAnimationFrame(draw);
+    } else {
+      _rangeAnimResolve();
+    }
+  }
+  draw();
+}
+
+// ─── SLIDE 6: SWEEP 3D HEATMAP ───────────────────────────────────
+let sweepInited = false;
+
+function buildSweepHeatmap() {
+  if (sweepInited) return;
+  sweepInited = true;
+
+  const inner = document.getElementById('hm-3d-inner');
+  if (!inner) return;
+
+  const colLabels = DECK_DATA.heatmap.pr_cols.map(p => '' + p);
+  const rowLabels = DECK_DATA.heatmap.margin_rows.map(m => m + '%');
+  const mainData  = DECK_DATA.heatmap.grid;   // median net RoH vs HODL (%, fees included), 5 margins × 11 PRs
+
+  // Diverging scale across the observed grid: least-negative RoH → green, worst → red.
+  const flat = mainData.flat();
+  const vMin = Math.min(...flat), vMax = Math.max(...flat);
+  function cellColor(val) {
+    const t = (val - vMin) / Math.max(vMax - vMin, 1e-6);   // 0 = worst, 1 = best
+    const r = Math.round(239 * (1 - t));
+    const g = Math.round(68  * (1 - t) + 211 * t);
+    const b = Math.round(68  * (1 - t) + 149 * t);
+    const a = 0.42 + t * 0.5;
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  // front board at bottom-right, back boards peek from upper-left
+  const XS = 16, YS = 11; // px per step
+  const layers = [
+    { data: mainData, step: 4, opacity: 0.16, label: 'Window 1 of 5' },
+    { data: mainData, step: 3, opacity: 0.34, label: 'Window 2 of 5' },
+    { data: mainData, step: 2, opacity: 0.54, label: 'Window 3 of 5' },
+    { data: mainData, step: 1, opacity: 0.74, label: 'Window 4 of 5' },
+    { data: mainData, step: 0, opacity: 1.00, label: 'Median RoH · 5 windows', front: true },
+  ];
+
+  layers.forEach(({ data, step, opacity, label, front }) => {
+    const board = document.createElement('div');
+    board.className = 'hm-board';
+    board.style.left = `${step * XS}px`;
+    board.style.top  = `${step * YS}px`;
+    board.style.zIndex = 5 - step;
+    board.style.opacity = opacity;
+
+    const lbl = document.createElement('div');
+    lbl.className = 'hm-board-label' + (front ? ' hm-board-label-front' : '');
+    lbl.textContent = label;
+    board.appendChild(lbl);
+
+    const colRow = document.createElement('div');
+    colRow.className = 'hm-cols';
+    colLabels.forEach(c => {
+      const d = document.createElement('div');
+      d.className = 'hm-col-lbl';
+      d.textContent = c;
+      colRow.appendChild(d);
+    });
+    board.appendChild(colRow);
+
+    const grid = document.createElement('div');
+    grid.className = 'hm-grid';
+    data.forEach((row, ri) => {
+      const rowEl = document.createElement('div');
+      rowEl.className = 'hm-row';
+      const rl = document.createElement('div');
+      rl.className = 'hm-row-lbl';
+      rl.textContent = rowLabels[ri];
+      rowEl.appendChild(rl);
+      row.forEach(val => {
+        const cell = document.createElement('div');
+        cell.className = 'hm-cell';
+        cell.style.background = cellColor(val);
+        if (front) {
+          cell.style.display = 'flex';
+          cell.style.alignItems = 'center';
+          cell.style.justifyContent = 'center';
+          cell.style.fontSize = '6.5px';
+          cell.style.fontWeight = '700';
+          cell.style.color = 'rgba(255,255,255,0.9)';
+          cell.textContent = Math.round(val) + '%';
+        }
+        rowEl.appendChild(cell);
+      });
+      grid.appendChild(rowEl);
+    });
+    board.appendChild(grid);
+    inner.appendChild(board);
+  });
+}
+
+// ─── SLIDE 6: RESULTS ─────────────────────────────────────────────
+let resultsInited = false;
+
+function initResultsCharts() {
+  if (resultsInited) return;
+  resultsInited = true;
+  buildResultsTable();
+  buildPeriodChart();
+}
+
+// Color map for the PR family: recommended = brand green, others spread across a palette.
+function prPalette(prs, rec) {
+  const PAL = ['#F59E0B', '#3B82F6', '#14B8A6', '#8B5CF6', '#EC4899', '#EF4444', '#60A5FA', '#A78BFA'];
+  const out = {};
+  let j = 0;
+  prs.forEach(pr => { out[pr] = (pr === rec) ? '#16C79A' : PAL[j++ % PAL.length]; });
+  return out;
+}
+
+function buildResultsTable() {
+  const wrap = document.getElementById('results-table');
+  if (!wrap) return;
+  const H = DECK_DATA.headline;
+  const PRS = DECK_DATA.series.pr_list;
+  const rec = DECK_DATA.recommend.price_ratio;
+  const PAL = prPalette(PRS, rec);
+  const fmt = v => (v > 0 ? '+' : '') + v.toFixed(0) + '%';
+  const rows = [
+    { label: 'HODL the basket (reference)', roh: '0%', fee: '—', color: '#9AA3B0' },
+    { label: 'Passive Balancer 50/50',      roh: fmt(H.balancer.roh_pct), fee: 'low', color: '#CBD5E1' },
+  ];
+  PRS.forEach(pr => {
+    const h = H['pr' + pr];
+    const isRec = pr === rec;
+    const tag = isRec ? '  ★ recommended' : (pr === Math.min(...PRS) ? ' (most concentrated)'
+                : pr === Math.max(...PRS) ? ' (≈ weighted)' : '');
+    rows.push({ label: `AutoRange · PR ${pr}${tag}`, roh: fmt(h.roh_pct),
+                fee: h.fee_yield_pct + '%', color: PAL[pr], highlight: isRec });
+  });
+  rows.forEach(r => {
+    const el = document.createElement('div');
+    el.className = 'rt-row' + (r.highlight ? ' rt-highlight' : '');
+    el.innerHTML = `<div class="rt-dot" style="background:${r.color}"></div>`
+      + `<div class="rt-label">${r.highlight ? '<strong>' + r.label + '</strong>' : r.label}</div>`
+      + `<div class="rt-val" style="color:${r.color};min-width:54px;text-align:right">${r.roh}</div>`
+      + `<div class="rt-val" style="color:var(--text2);min-width:54px;text-align:right;font-weight:600">${r.fee}</div>`;
+    wrap.appendChild(el);
+  });
+}
+
+function buildPeriodChart() {
+  const cnv = document.getElementById('period-canvas');
+  if (!cnv) return;
+
+  const S = DECK_DATA.series;
+  const labels = S.labels;   // per-point x labels (month abbrev at boundaries, '' elsewhere)
+  const rec = DECK_DATA.recommend.price_ratio;
+  const PAL = prPalette(S.pr_list, rec);
+  const mk = (label, data, color, width, dash) => ({
+    label, data, borderColor: color, backgroundColor: 'transparent',
+    borderWidth: width, pointRadius: 0, tension: 0.3, borderDash: dash || [],
+  });
+  const datasets = [
+    mk('HODL basket',      S.hodl,     '#9AA3B0', 1.5, [4, 4]),
+    mk('Passive Balancer', S.balancer, '#CBD5E1', 1.5, [2, 3]),
+  ];
+  S.pr_list.forEach(pr => {
+    const isRec = pr === rec;
+    datasets.push(mk(`AutoRange PR ${pr}${isRec ? ' ★' : ''}`, S['pr' + pr],
+                     PAL[pr], isRec ? 2.8 : 1.6));
+  });
+
+  // Tight auto-fit y-axis so the spread between configs is visible.
+  const allVals = datasets.flatMap(d => d.data);
+  const yMin = Math.floor((Math.min(...allVals) - 2) / 2) * 2;
+  const yMax = Math.ceil((Math.max(...allVals) + 2) / 2) * 2;
+
+  new Chart(cnv, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 1600, easing: 'easeInOutQuart' },
+      plugins: { legend: { position: 'bottom',
+        labels: { color: '#9AA3B0', font: { size: 10 }, boxWidth: 12, padding: 8 } } },
+      scales: {
+        x: { ticks: { color: '#9AA3B0', font: { size: 9 }, maxRotation: 0 },
+             grid: { color: 'rgba(255,255,255,0.04)' } },
+        y: { min: yMin, max: yMax, grid: { color: 'rgba(255,255,255,0.05)' },
+             ticks: { color: '#9AA3B0', font: { size: 10 }, stepSize: 5,
+                      callback: v => v } },
+      },
+    },
+  });
+}
+
+function buildSensitivity() {
+  const wrap = document.getElementById('sens-rows');
+  if (!wrap || wrap.dataset.built) return;
+  wrap.dataset.built = '1';
+  DECK_DATA.sensitivity.forEach(s => {
+    const vmax = (s.v_max && s.v_max >= 1000) ? '$' + Math.round(s.v_max / 1000) + 'k/day' : 'none';
+    const el = document.createElement('div');
+    el.className = 'sens-row';
+    el.innerHTML = `<div class="sens-c sens-lbl">${s.label}</div>`
+      + `<div class="sens-c">${vmax}</div>`
+      + `<div class="sens-c" style="color:var(--green);font-weight:700">${s.conc_fee.toFixed(1)}%</div>`
+      + `<div class="sens-c" style="color:#F87171">${s.conc_roh.toFixed(0)}%</div>`
+      + `<div class="sens-c">PR ${s.best_roh_pr}</div>`;
+    wrap.appendChild(el);
+  });
+}
+
+// ─── PDF EXPORT ────────────────────────────────────────────────────
+async function exportPDF() {
+  const btn = document.getElementById('pdf-btn');
+  const origHTML = btn.innerHTML;
+  btn.innerHTML = '<span style="opacity:.7">Generating…</span>';
+  btn.disabled = true;
+
+  try {
+    const { jsPDF } = window.jspdf;
+    const W_mm = 297, H_mm = 167.0625;
+    const pdf  = new jsPDF({ orientation: 'landscape', unit: 'mm', format: [W_mm, H_mm] });
+
+    const deck   = document.getElementById('deck');
+    const slides = Array.from(document.querySelectorAll('.slide'));
+
+    const savedTransform = deck.style.transform;
+    deck.style.transform = 'translate(0px,0px) scale(1)';
+
+    // Pre-render slide 2 canvas
+    {
+      const s2 = slides[1];
+      s2.style.cssText += ';display:flex!important;position:relative!important;inset:auto!important;width:1280px!important;height:720px!important;';
+      await new Promise(r => setTimeout(r, 60));
+      if (!rangeAnimStarted) await startRangeAnim();
+      await rangeAnimDone;
+      s2.style.cssText = s2.style.cssText
+        .replace(/display:[^;]+!important;?/g, '')
+        .replace(/position:[^;]+!important;?/g, '')
+        .replace(/inset:[^;]+!important;?/g, '')
+        .replace(/width:[^;]+!important;?/g, '')
+        .replace(/height:[^;]+!important;?/g, '');
+    }
+
+    // Pre-build sweep heatmap
+    buildSweepHeatmap();
+
+    // Pre-build results charts
+    initResultsCharts();
+
+
+    // Pre-load token logos as data URLs (both INV and DOLA)
+    const logoRestore = [];
+    for (const id of ['cover-logo-img', 'cover-logo-img-b']) {
+      const logoImg = document.getElementById(id);
+      if (logoImg && logoImg.src && !logoImg.src.startsWith('data:') && !logoImg.src.startsWith('blob:')) {
+        try {
+          const sep  = logoImg.src.includes('?') ? '&' : '?';
+          const resp = await fetch(logoImg.src + sep + '_cb=' + Date.now(), { mode: 'cors' });
+          const blob = await resp.blob();
+          const dataUrl = await new Promise(res => {
+            const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(blob);
+          });
+          logoRestore.push([logoImg, logoImg.src]);
+          logoImg.src = dataUrl;
+          await new Promise(r => setTimeout(r, 30));
+        } catch (e) { /* CORS fetch failed */ }
+      }
+    }
+
+    const gradientEls = Array.from(document.querySelectorAll('.cover-title'));
+
+    for (let i = 0; i < slides.length; i++) {
+      slides.forEach((s, j) => {
+        if (j === i) {
+          s.style.cssText += ';display:flex!important;position:relative!important;inset:auto!important;width:1280px!important;height:720px!important;';
+        } else {
+          s.style.display = 'none';
+        }
+      });
+
+      gradientEls.forEach(el => {
+        el.style.background          = 'none';
+        el.style.webkitTextFillColor = '#F0EAE0';
+        el.style.backgroundClip      = 'unset';
+      });
+
+      document.querySelectorAll('.slide-dot').forEach((d, j) => {
+        d.classList.toggle('active', (j % slides.length) === i);
+      });
+
+      await new Promise(r => setTimeout(r, 120));
+
+      const c = await html2canvas(slides[i], {
+        scale:           2,
+        width:           1280,
+        height:          720,
+        useCORS:         true,
+        allowTaint:      true,
+        logging:         false,
+        backgroundColor: '#1C2026',
+        ignoreElements: el =>
+          ['nav-prev','nav-next','pdf-btn'].includes(el.id) ||
+          el.classList.contains('glow-brand') ||
+          el.classList.contains('glow-green'),
+      });
+
+      gradientEls.forEach(el => {
+        el.style.background          = '';
+        el.style.webkitTextFillColor = '';
+        el.style.backgroundClip      = '';
+      });
+
+      if (i > 0) pdf.addPage([W_mm, H_mm], 'landscape');
+      pdf.addImage(c.toDataURL('image/jpeg', 0.93), 'JPEG', 0, 0, W_mm, H_mm);
+    }
+
+    slides.forEach(s => {
+      s.style.cssText = s.style.cssText
+        .replace(/display:[^;]+!important;?/g, '')
+        .replace(/position:[^;]+!important;?/g, '')
+        .replace(/inset:[^;]+!important;?/g, '')
+        .replace(/width:[^;]+!important;?/g, '')
+        .replace(/height:[^;]+!important;?/g, '');
+    });
+    logoRestore.forEach(([el, src]) => { el.src = src; });
+    deck.style.transform = savedTransform;
+    scaleDeck();
+
+    pdf.save('inv-dola-pol-analysis-balancer.pdf');
+
+  } catch (err) {
+    console.error('PDF export failed:', err);
+    alert('Export failed - see browser console.');
+  }
+
+  btn.innerHTML = origHTML;
+  btn.disabled  = false;
+}
+</script>
+</body>
+</html>
