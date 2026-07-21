@@ -100,7 +100,7 @@ PAIR_CONFIGS = {
         # 2025-07-29, hence the shortened windows.
         "tokens": ["HYPE", "TREE"],   # alphabetical — runner price/reserve order
         "pool_id": "treehype",
-        "gas_cost": 0.1,   # HyperEVM gas is ~cents, not the $1 Ethereum default
+        "gas_cost": 0.002,  # HyperEVM: ~0.2 Gwei * ~200k gas * ~$45 HYPE ≈ $0.002/swap
         "fees": 0.008,
         "tvls": {
             "20k": 20_000,
