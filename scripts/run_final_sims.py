@@ -92,6 +92,22 @@ PAIR_CONFIGS = {
         },
         "train": ("2025-07-15 00:00:00", "2025-10-05 00:00:00"),
     },
+    "treehype": {
+        # TREE / HYPE. The live pool is TREE/tHYPE, but a rate provider
+        # internalises tHYPE's rate, so we simulate against the underlying
+        # HYPE (== wHYPE) price. Not in the MM artifact → median-pool fallback
+        # noise. On HyperEVM (gas ~cents). TREE (CoinGecko) price data starts
+        # 2025-07-29, hence the shortened windows.
+        "tokens": ["HYPE", "TREE"],   # alphabetical — runner price/reserve order
+        "pool_id": "treehype",
+        "gas_cost": 0.002,  # HyperEVM: ~0.2 Gwei * ~200k gas * ~$45 HYPE ≈ $0.002/swap
+        "fees": 0.008,
+        "tvls": {
+            "20k": 20_000,
+        },
+        "train": ("2025-08-15 00:00:00", "2026-01-15 00:00:00"),
+        "test":  ("2026-01-15 00:00:00", "2026-07-01 00:00:00"),
+    },
 }
 
 

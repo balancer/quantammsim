@@ -1,6 +1,6 @@
 ---
 name: reclamm-pair-onboarding
-description: Onboard a new token pair for reCLAMM simulations — fetch price data, run the Optuna parameter sweep, and produce final-sim CSVs/plots with candidate pool params. Use when asked to simulate a reCLAMM pool for a pair, gather candidate price_ratio/margin/shift params, or add a pair to run_final_sims.py.
+description: Onboard a new token pair for reCLAMM simulations — fetch price data, run the Optuna parameter sweep, produce final-sim CSVs/plots with candidate pool params, and optionally build a Balancer AutoRange investor pitch deck. Use when asked to simulate a reCLAMM pool for a pair, gather candidate price_ratio/margin/shift params, add a pair to run_final_sims.py, or make a pitch/proposal deck for a pair.
 ---
 
 # reCLAMM pair onboarding
@@ -100,6 +100,51 @@ Selection: best trial per TVL by OOS `returns_over_hodl` (override with
 `run_{Value,Reserves,TokenValues}_<pair>_<tvl>_{train,test}_<hash>.csv`,
 themed plots `<pair>_{train,test}[_weights]_{light,dark}.png`, and
 `<pair>_sim_results.pkl`. The printed summary gives train/test RoH and fees.
+
+## Step 5 — investor deck (optional)
+
+A ready-made Balancer-v3 "AutoRange" pitch deck lives at
+`.claude/skills/reclamm-pair-onboarding/assets/autorange-deck-example.html`
+(single self-contained HTML file, opens in any browser, has an **Export PDF**
+button). To make a deck for a new pair, **duplicate that file** and edit only
+the four things below. **No extra scripts are needed** — all numbers come
+straight from the `run_final_sims.py` output you already produced (printed
+train/test RoH + fees, and the `run_Value_*` CSVs normalised to 100). **Do not
+change any simulation logic** to build a deck.
+
+Everything is driven by two JS objects near the bottom of the file
+(`const CONFIG = {…}` and `const DECK_DATA = {…}`). Only touch:
+
+1. **Token images** — `CONFIG.tokenLogoUrl` and `CONFIG.tokenBLogoUrl`
+   (CoinGecko `image.large` URLs, e.g.
+   `https://api.coingecko.com/api/v3/coins/<id>?...` → `.image.large`).
+
+2. **Token names / branding** — `CONFIG.tokenA`, `CONFIG.tokenB`,
+   `CONFIG.brandColor`, `CONFIG.date` (these auto-fill the page title, cover
+   logos and date). Then find-and-replace the hardcoded pair text: the cover
+   `<h1 id="cover-title">`, cover placeholder letters (e.g. `IN`/`DO`), the
+   `X / Y AutoRange - Balancer v3` footer labels, the proposal hero
+   `<h2 class="proposal-config">`, the range-chart CoinGecko fetch id +
+   `'<TOKEN> / USD'` label, and the `pdf.save('…')` filename.
+
+3. **Results slide** (`#slide-results`) — the graphs + LP-return comparison.
+   Fill `DECK_DATA.series` (`hodl`, `balancer` = the passive full-range
+   reference, `pr<N>` = the simulated AutoRange configs — each an array
+   normalised to 100 from the `run_Value_*` CSVs) and `DECK_DATA.headline`
+   (`pr<N>.roh_pct`, `pr<N>.fee_yield_pct`, `balancer.roh_pct`) from the sim
+   summary. Also update the hardcoded `Backtest · <dates>` eyebrow, the
+   `$<X> pool` chart title, and the results-note sentence.
+
+4. **Proposal slide** (`#slide-proposal`) — the recommendation. Set
+   `DECK_DATA.recommend.price_ratio` (controls which results row is starred)
+   and the four `<span class="proposal-param-val">` values (Price Ratio,
+   Margin, Shift Speed, Swap Fee).
+
+**Leave everything else as-is.** In particular the parameter-sweep slide
+(`#slide-sweep`, the 3-D heat-map) is a **standard illustration** — it does
+**not** need per-project data; keep `DECK_DATA.heatmap` and the sweep slide
+unchanged. The "What is AutoRange", methodology, and security slides are also
+generic and stay put.
 
 ## Gotchas
 

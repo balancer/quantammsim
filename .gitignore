@@ -152,6 +152,8 @@ instance/
 # Sphinx documentation
 docs/_build/
 *.html
+# but keep the committed AutoRange pitch-deck example (a tracked skill asset)
+!.claude/skills/reclamm-pair-onboarding/assets/autorange-deck-example.html
 *.doctree
 
 # PyBuilder

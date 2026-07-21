@@ -83,7 +83,9 @@ COINGECKO_IDS = {
     "QI": "benqi",
     "QNT": "quant-network",
     "RDNT": "radiant-capital",
-    # TREE not on CoinGecko — handled as fallback below
+    "TREE": "treehouse",
+    "HYPE": "hyperliquid",       # Hyperliquid L1 native (underlying of tHYPE)
+    "wHYPE": "hyperliquid",      # Wrapped HYPE — same underlying price
     "XAI": "xai-blockchain",
     # Wrapped aTokens — use underlying
     "waEthLidoWETH": "ethereum",
